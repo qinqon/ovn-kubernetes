@@ -30,7 +30,7 @@ if  ! ( command -v controller-gen > /dev/null ); then
   olddir="${PWD}"
   builddir="$(mktemp -d)"
   cd "${builddir}"
-  GO111MODULE=on go get -u sigs.k8s.io/controller-tools/cmd/controller-gen
+  GO111MODULE=on go install sigs.k8s.io/controller-tools/cmd/controller-gen@latest
   cd "${olddir}"
   if [[ "${builddir}" == /tmp/* ]]; then #paranoia
       rm -rf "${builddir}"

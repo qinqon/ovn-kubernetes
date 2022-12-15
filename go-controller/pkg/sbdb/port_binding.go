@@ -7,24 +7,76 @@ import "github.com/ovn-org/libovsdb/model"
 
 // PortBinding defines an object in Port_Binding table
 type PortBinding struct {
-	UUID             string            `ovsdb:"_uuid"`
-	Chassis          *string           `ovsdb:"chassis"`
-	Datapath         string            `ovsdb:"datapath"`
-	Encap            *string           `ovsdb:"encap"`
-	ExternalIDs      map[string]string `ovsdb:"external_ids"`
-	GatewayChassis   []string          `ovsdb:"gateway_chassis"`
-	HaChassisGroup   *string           `ovsdb:"ha_chassis_group"`
-	LogicalPort      string            `ovsdb:"logical_port"`
-	MAC              []string          `ovsdb:"mac"`
-	NatAddresses     []string          `ovsdb:"nat_addresses"`
-	Options          map[string]string `ovsdb:"options"`
-	ParentPort       *string           `ovsdb:"parent_port"`
-	RequestedChassis *string           `ovsdb:"requested_chassis"`
-	Tag              *int              `ovsdb:"tag"`
-	TunnelKey        int               `ovsdb:"tunnel_key"`
-	Type             string            `ovsdb:"type"`
-	Up               *bool             `ovsdb:"up"`
-	VirtualParent    *string           `ovsdb:"virtual_parent"`
+	UUID                       string            `ovsdb:"_uuid"`
+	AdditionalChassis          []string          `ovsdb:"additional_chassis"`
+	AdditionalEncap            []string          `ovsdb:"additional_encap"`
+	Chassis                    *string           `ovsdb:"chassis"`
+	Datapath                   string            `ovsdb:"datapath"`
+	Encap                      *string           `ovsdb:"encap"`
+	ExternalIDs                map[string]string `ovsdb:"external_ids"`
+	GatewayChassis             []string          `ovsdb:"gateway_chassis"`
+	HaChassisGroup             *string           `ovsdb:"ha_chassis_group"`
+	LogicalPort                string            `ovsdb:"logical_port"`
+	MAC                        []string          `ovsdb:"mac"`
+	NatAddresses               []string          `ovsdb:"nat_addresses"`
+	Options                    map[string]string `ovsdb:"options"`
+	ParentPort                 *string           `ovsdb:"parent_port"`
+	PortSecurity               []string          `ovsdb:"port_security"`
+	RequestedAdditionalChassis []string          `ovsdb:"requested_additional_chassis"`
+	RequestedChassis           *string           `ovsdb:"requested_chassis"`
+	Tag                        *int              `ovsdb:"tag"`
+	TunnelKey                  int               `ovsdb:"tunnel_key"`
+	Type                       string            `ovsdb:"type"`
+	Up                         *bool             `ovsdb:"up"`
+	VirtualParent              *string           `ovsdb:"virtual_parent"`
+}
+
+func copyPortBindingAdditionalChassis(a []string) []string {
+	if a == nil {
+		return nil
+	}
+	b := make([]string, len(a))
+	copy(b, a)
+	return b
+}
+
+func equalPortBindingAdditionalChassis(a, b []string) bool {
+	if (a == nil) != (b == nil) {
+		return false
+	}
+	if len(a) != len(b) {
+		return false
+	}
+	for i, v := range a {
+		if b[i] != v {
+			return false
+		}
+	}
+	return true
+}
+
+func copyPortBindingAdditionalEncap(a []string) []string {
+	if a == nil {
+		return nil
+	}
+	b := make([]string, len(a))
+	copy(b, a)
+	return b
+}
+
+func equalPortBindingAdditionalEncap(a, b []string) bool {
+	if (a == nil) != (b == nil) {
+		return false
+	}
+	if len(a) != len(b) {
+		return false
+	}
+	for i, v := range a {
+		if b[i] != v {
+			return false
+		}
+	}
+	return true
 }
 
 func copyPortBindingChassis(a *string) *string {
@@ -223,6 +275,54 @@ func equalPortBindingParentPort(a, b *string) bool {
 	return *a == *b
 }
 
+func copyPortBindingPortSecurity(a []string) []string {
+	if a == nil {
+		return nil
+	}
+	b := make([]string, len(a))
+	copy(b, a)
+	return b
+}
+
+func equalPortBindingPortSecurity(a, b []string) bool {
+	if (a == nil) != (b == nil) {
+		return false
+	}
+	if len(a) != len(b) {
+		return false
+	}
+	for i, v := range a {
+		if b[i] != v {
+			return false
+		}
+	}
+	return true
+}
+
+func copyPortBindingRequestedAdditionalChassis(a []string) []string {
+	if a == nil {
+		return nil
+	}
+	b := make([]string, len(a))
+	copy(b, a)
+	return b
+}
+
+func equalPortBindingRequestedAdditionalChassis(a, b []string) bool {
+	if (a == nil) != (b == nil) {
+		return false
+	}
+	if len(a) != len(b) {
+		return false
+	}
+	for i, v := range a {
+		if b[i] != v {
+			return false
+		}
+	}
+	return true
+}
+
 func copyPortBindingRequestedChassis(a *string) *string {
 	if a == nil {
 		return nil
@@ -297,6 +397,8 @@ func equalPortBindingVirtualParent(a, b *string) bool {
 
 func (a *PortBinding) DeepCopyInto(b *PortBinding) {
 	*b = *a
+	b.AdditionalChassis = copyPortBindingAdditionalChassis(a.AdditionalChassis)
+	b.AdditionalEncap = copyPortBindingAdditionalEncap(a.AdditionalEncap)
 	b.Chassis = copyPortBindingChassis(a.Chassis)
 	b.Encap = copyPortBindingEncap(a.Encap)
 	b.ExternalIDs = copyPortBindingExternalIDs(a.ExternalIDs)
@@ -306,6 +408,8 @@ func (a *PortBinding) DeepCopyInto(b *PortBinding) {
 	b.NatAddresses = copyPortBindingNatAddresses(a.NatAddresses)
 	b.Options = copyPortBindingOptions(a.Options)
 	b.ParentPort = copyPortBindingParentPort(a.ParentPort)
+	b.PortSecurity = copyPortBindingPortSecurity(a.PortSecurity)
+	b.RequestedAdditionalChassis = copyPortBindingRequestedAdditionalChassis(a.RequestedAdditionalChassis)
 	b.RequestedChassis = copyPortBindingRequestedChassis(a.RequestedChassis)
 	b.Tag = copyPortBindingTag(a.Tag)
 	b.Up = copyPortBindingUp(a.Up)
@@ -329,6 +433,8 @@ func (a *PortBinding) CloneModel() model.Model {
 
 func (a *PortBinding) Equals(b *PortBinding) bool {
 	return a.UUID == b.UUID &&
+		equalPortBindingAdditionalChassis(a.AdditionalChassis, b.AdditionalChassis) &&
+		equalPortBindingAdditionalEncap(a.AdditionalEncap, b.AdditionalEncap) &&
 		equalPortBindingChassis(a.Chassis, b.Chassis) &&
 		a.Datapath == b.Datapath &&
 		equalPortBindingEncap(a.Encap, b.Encap) &&
@@ -340,6 +446,8 @@ func (a *PortBinding) Equals(b *PortBinding) bool {
 		equalPortBindingNatAddresses(a.NatAddresses, b.NatAddresses) &&
 		equalPortBindingOptions(a.Options, b.Options) &&
 		equalPortBindingParentPort(a.ParentPort, b.ParentPort) &&
+		equalPortBindingPortSecurity(a.PortSecurity, b.PortSecurity) &&
+		equalPortBindingRequestedAdditionalChassis(a.RequestedAdditionalChassis, b.RequestedAdditionalChassis) &&
 		equalPortBindingRequestedChassis(a.RequestedChassis, b.RequestedChassis) &&
 		equalPortBindingTag(a.Tag, b.Tag) &&
 		a.TunnelKey == b.TunnelKey &&
