@@ -402,6 +402,26 @@ func (manager *LogicalSwitchManager) ConditionalIPRelease(switchName string, ipn
 	return false, nil
 }
 
+// FindSwitchBySubnets will find the switch that contains one of the subnets
+// from "subnets" if not it will return "", false
+func (manager *LogicalSwitchManager) FindSwitchBySubnets(subnets []*net.IPNet) (string, bool) {
+	for _, podIP := range subnets {
+		subnet := net.IPNet{
+			Mask: podIP.Mask,
+			IP:   podIP.IP.Mask(podIP.Mask),
+		}
+		for switchName, lsInfo := range manager.cache {
+			for _, ipam := range lsInfo.ipams {
+				ipamCIDR := ipam.CIDR()
+				if subnet.String() == ipamCIDR.String() {
+					return switchName, true
+				}
+			}
+		}
+	}
+	return "", false
+}
+
 // NewL2SwitchManager initializes a new layer2 logical switch manager,
 // only manage subnet for the one specified switch
 func NewL2SwitchManager() *LogicalSwitchManager {
