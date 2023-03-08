@@ -108,6 +108,10 @@ func (a *ipAllocatorStub) ForSubnet(name string) subnet.NamedAllocator {
 	return nil
 }
 
+func (a *ipAllocatorStub) FindSwitchBySubnets([]*net.IPNet) (string, bool) {
+	panic("not implemented") // TODO: Implement
+}
+
 type idAllocatorStub struct {
 	released bool
 }
@@ -125,6 +129,10 @@ func (a *idAllocatorStub) ReleaseID(name string) {
 }
 
 func (a *idAllocatorStub) ForName(name string) id.NamedAllocator {
+	panic("not implemented") // TODO: Implement
+}
+
+func (a *idAllocatorStub) FindSwitchBySubnets([]*net.IPNet) (string, bool) {
 	panic("not implemented") // TODO: Implement
 }
 
