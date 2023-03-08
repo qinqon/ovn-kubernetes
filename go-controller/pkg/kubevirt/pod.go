@@ -53,3 +53,24 @@ func FindIPConfigByVMLabel(client clientset.Interface, pod *corev1.Pod) (IPConfi
 	}
 	return ipConfig, nil
 }
+
+// PodIsLiveMigrationLeftOver return true if the pod is a finished
+// virt-launcher from a migration
+func PodIsLiveMigrationLeftOver(client clientset.Interface, pod *corev1.Pod) (bool, error) {
+	vmPods, err := FindPodsByVMLabel(client, pod)
+	if err != nil {
+		return false, err
+	}
+
+	for _, vmPod := range vmPods {
+		if vmPod.CreationTimestamp.After(pod.CreationTimestamp.Time) {
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
+func PodMatchesExternalIDs(pod *corev1.Pod, externalIDs map[string]string) bool {
+	return len(externalIDs) > 1 && externalIDs["namespace"] == pod.Namespace && externalIDs[VMLabel] == pod.Labels[VMLabel]
+}
