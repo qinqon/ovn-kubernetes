@@ -27,6 +27,7 @@ func (oc *DefaultNetworkController) syncPods(pods []interface{}) error {
 	//
 	// TBD: Before this succeeds, add Pod handler should not continue to allocate IPs for the new Pods.
 	expectedLogicalPorts := make(map[string]bool)
+	vms := make(map[ktypes.NamespacedName]bool)
 	for _, podInterface := range pods {
 		pod, ok := podInterface.(*kapi.Pod)
 		if !ok {
@@ -38,6 +39,10 @@ func (oc *DefaultNetworkController) syncPods(pods []interface{}) error {
 			return fmt.Errorf("failed geting expected switch name at syncPods: %v", err)
 		}
 		if kubevirt.IsPodLiveMigratable(pod) {
+			vm := kubevirt.ExtractVMNameFromPod(pod)
+			if vm != nil {
+				vms[*vm] = oc.isPodScheduledinLocalZone(pod)
+			}
 			annotation, err := util.UnmarshalPodAnnotation(pod.Annotations, ovntypes.DefaultNetworkName)
 			if err != nil {
 				continue
@@ -63,6 +68,7 @@ func (oc *DefaultNetworkController) syncPods(pods []interface{}) error {
 		}
 		if expectedLogicalPortName != "" {
 			expectedLogicalPorts[expectedLogicalPortName] = true
+
 		}
 
 		// delete the outdated hybrid overlay subnet route if it exists
@@ -107,6 +113,10 @@ func (oc *DefaultNetworkController) syncPods(pods []interface{}) error {
 				}
 			}
 		}
+	}
+
+	if err := kubevirt.SyncVirtualMachines(oc.nbClient, vms); err != nil {
+		return fmt.Errorf("failed syncing running virtual machines: %v", err)
 	}
 
 	return oc.deleteStaleLogicalSwitchPorts(expectedLogicalPorts)
@@ -154,6 +164,7 @@ func (oc *DefaultNetworkController) deleteLogicalPort(pod *kapi.Pod, portInfo *l
 }
 
 func (oc *DefaultNetworkController) addLogicalPort(pod *kapi.Pod) (err error) {
+
 	// If a node does node have an assigned hostsubnet don't wait for the logical switch to appear
 	switchName := pod.Spec.NodeName
 	if oc.lsManager.IsNonHostSubnetSwitch(switchName) {
