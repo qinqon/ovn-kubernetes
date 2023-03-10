@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"strings"
 	"time"
 
 	"github.com/urfave/cli/v2"
@@ -79,8 +80,12 @@ func newPodWithLabels(namespace, name, node, podIP string, additionalLabels map[
 
 func newPod(namespace, name, node, podIP string) *v1.Pod {
 	podIPs := []v1.PodIP{}
-	if podIP != "" {
-		podIPs = append(podIPs, v1.PodIP{IP: podIP})
+	ips := strings.Split(podIP, " ")
+	if len(ips) > 0 {
+		podIP = ips[0]
+		for _, ip := range ips {
+			podIPs = append(podIPs, v1.PodIP{IP: ip})
+		}
 	}
 	return &v1.Pod{
 		ObjectMeta: newPodMeta(namespace, name, nil),
@@ -135,7 +140,11 @@ func newTPod(nodeName, nodeSubnet, nodeMgtIP, nodeGWIP, podName, podIP, podMAC, 
 
 func (p testPod) populateLogicalSwitchCache(fakeOvn *FakeOVN, uuid string) {
 	gomega.Expect(p.nodeName).NotTo(gomega.Equal(""))
-	err := fakeOvn.controller.lsManager.AddSwitch(p.nodeName, uuid, []*net.IPNet{ovntest.MustParseIPNet(p.nodeSubnet)})
+	subnets := []*net.IPNet{}
+	for _, subnet := range strings.Split(p.nodeSubnet, " ") {
+		subnets = append(subnets, ovntest.MustParseIPNet(subnet))
+	}
+	err := fakeOvn.controller.lsManager.AddSwitch(p.nodeName, uuid, subnets)
 	gomega.Expect(err).NotTo(gomega.HaveOccurred())
 }
 
