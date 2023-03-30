@@ -178,6 +178,8 @@ parse_args() {
                                                 ;;
             -mlb | --install-metallb )          KIND_INSTALL_METALLB=true
                                                 ;;
+            -ikv | --install-kubevirt)          KIND_INSTALL_KUBEVIRT=true
+                                                ;;
             -ha | --ha-enabled )                OVN_HA=true
                                                 ;;
             -me | --multicast-enabled)          OVN_MULTICAST_ENABLE=true
@@ -334,6 +336,7 @@ print_params() {
      echo "MANIFEST_OUTPUT_DIR = $MANIFEST_OUTPUT_DIR"
      echo "KIND_INSTALL_INGRESS = $KIND_INSTALL_INGRESS"
      echo "KIND_INSTALL_METALLB = $KIND_INSTALL_METALLB"
+     echo "KIND_INSTALL_KUBEVIRT = $KIND_INSTALL_KUBEVIRT"
      echo "OVN_HA = $OVN_HA"
      echo "RUN_IN_CONTAINER = $RUN_IN_CONTAINER"
      echo "KIND_CLUSTER_NAME = $KIND_CLUSTER_NAME"
@@ -475,6 +478,7 @@ set_default_params() {
   OVN_GATEWAY_MODE=${OVN_GATEWAY_MODE:-shared}
   KIND_INSTALL_INGRESS=${KIND_INSTALL_INGRESS:-false}
   KIND_INSTALL_METALLB=${KIND_INSTALL_METALLB:-false}
+  KIND_INSTALL_KUBEVIRT=${KIND_INSTALL_KUBEVIRT:-false}
   OVN_HA=${OVN_HA:-false}
   KIND_LOCAL_REGISTRY=${KIND_LOCAL_REGISTRY:-false}
   KIND_LOCAL_REGISTRY_NAME=${KIND_LOCAL_REGISTRY_NAME:-kind-registry}
@@ -739,7 +743,7 @@ build_ovn_image() {
     # Find all built executables, but ignore the 'windows' directory if it exists
     find ../../go-controller/_output/go/bin/ -maxdepth 1 -type f -exec cp -f {} . \;
     echo "ref: $(git rev-parse  --symbolic-full-name HEAD)  commit: $(git rev-parse  HEAD)" > git_info
-    $OCI_BIN build -t "${OVN_IMAGE}" -f Dockerfile.fedora .
+    $OCI_BIN build --build-arg OVS_BRANCH=branch-3.1 -t "${OVN_IMAGE}" -f Dockerfile.fedora.dev .
 
     # store in local registry
     if [ "$KIND_LOCAL_REGISTRY" == true ];then
@@ -1071,6 +1075,26 @@ add_dns_hostnames() {
   done
 }
 
+function install_kubevirt() {
+    for node in $(kubectl get node --no-headers  -o custom-columns=":metadata.name"); do
+        docker exec -t $node bash -c "echo 'fs.inotify.max_user_watches=1048576' >> /etc/sysctl.conf"
+        docker exec -t $node bash -c "echo 'fs.inotify.max_user_instances=512' >> /etc/sysctl.conf"
+        docker exec -i $node bash -c "sysctl -p /etc/sysctl.conf"
+        if [[ "${node}" =~ worker ]]; then
+            kubectl label nodes $node node-role.kubernetes.io/worker="" --overwrite=true
+        fi
+    done
+    local nightly_build_base_url="https://storage.googleapis.com/kubevirt-prow/devel/nightly/release/kubevirt/kubevirt"
+    local latest=$(curl -sL "${nightly_build_base_url}/latest")
+
+    echo "Deploy latest nighly build Kubevirt"
+    if [ "$(kubectl get kubevirts -n kubevirt kubevirt -ojsonpath='{.status.phase}')" != "Deployed" ]; then
+      kubectl apply -f "${nightly_build_base_url}/${latest}/kubevirt-operator.yaml"
+      kubectl apply -f "${nightly_build_base_url}/${latest}/kubevirt-cr.yaml"
+    fi
+    kubectl wait -n kubevirt kv kubevirt --for condition=Available --timeout 15m
+}
+
 check_dependencies
 # In order to allow providing arguments with spaces, e.g. "-vconsole:info -vfile:info"
 # the original command <parse_args $*> was replaced by <parse_args "$@">
@@ -1127,4 +1151,7 @@ if [ "${ENABLE_IPSEC}" == true ]; then
 fi
 if [ "$KIND_INSTALL_METALLB" == true ]; then
   install_metallb
+fi
+if [ "$KIND_INSTALL_KUBEVIRT" == true ]; then
+  install_kubevirt
 fi
