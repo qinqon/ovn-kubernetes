@@ -377,6 +377,7 @@ jobs:
           - {"target": "control-plane",     "ha": "noHA", "gateway-mode": "local",  "ipfamily": "ipv4",      "disable-snat-multiple-gws": "noSnatGW", "second-bridge": "1br", "separate-cluster-manager": "true"}
           - {"target": "control-plane",     "ha": "noHA", "gateway-mode": "shared", "ipfamily": "ipv4",      "disable-snat-multiple-gws": "noSnatGW", "second-bridge": "2br", "separate-cluster-manager": "false"}
           - {"target": "multi-homing",      "ha": "noHA", "gateway-mode": "local",  "ipfamily": "ipv4",      "disable-snat-multiple-gws": "SnatGW",   "second-bridge": "1br", "separate-cluster-manager": "false"}
+          - {"target": "kv-live-migration", "ha": "noHA", "gateway-mode": "shared", "ipfamily": "ipv4",      "disable-snat-multiple-gws": "SnatGW",   "second-bridge": "1br", "separate-cluster-manager": "false"}
           - {"target": "node-ip-migration", "ha": "noHA", "gateway-mode": "shared", "ipfamily": "ipv6",      "disable-snat-multiple-gws": "SnatGW",   "second-bridge": "1br", "separate-cluster-manager": "true"}
           - {"target": "node-ip-migration", "ha": "noHA", "gateway-mode": "local",  "ipfamily": "ipv4",      "disable-snat-multiple-gws": "SnatGW",   "second-bridge": "1br", "separate-cluster-manager": "false"}
     needs: [ build-pr ]
@@ -393,6 +394,7 @@ jobs:
       KIND_IPV4_SUPPORT: "${{ matrix.ipfamily == 'IPv4' || matrix.ipfamily == 'dualstack' }}"
       KIND_IPV6_SUPPORT: "${{ matrix.ipfamily == 'IPv6' || matrix.ipfamily == 'dualstack' }}"
       ENABLE_MULTI_NET: "${{ matrix.target == 'multi-homing' }}"
+      KIND_INSTALL_KUBEVIRT: "${{ matrix.target == 'kv-live-migration' }}"
       OVN_SEPARATE_CLUSTER_MANAGER: "${{ matrix.separate-cluster-manager == 'true' }}"
     steps:
 
@@ -448,6 +450,8 @@ jobs:
           make -C test control-plane WHAT="Multi Homing"
         elif [ "${{ matrix.target }}" == "node-ip-migration" ]; then
           make -C test control-plane WHAT="Node IP address migration"
+        elif [ "${{ matrix.target }}" == "kv-live-migration" ]; then
+          make -C test control-plane WHAT=Kubevirt Live Migration"
         else
           make -C test ${{ matrix.target }}
         fi

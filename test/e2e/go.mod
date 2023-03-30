@@ -33,19 +33,21 @@ replace (
 )
 
 require (
-	github.com/google/go-cmp v0.5.5
+	github.com/google/go-cmp v0.5.6
 	github.com/k8snetworkplumbingwg/network-attachment-definition-client v1.4.0
 	github.com/onsi/ginkgo v1.16.5
-	github.com/onsi/gomega v1.10.1
+	github.com/onsi/gomega v1.18.1
 	github.com/pkg/errors v0.9.1
 	golang.org/x/sync v0.0.0-20210220032951-036812b2e83c
 	k8s.io/api v0.24.0
 	k8s.io/apimachinery v0.24.0
-	k8s.io/client-go v0.24.0
+	k8s.io/client-go v12.0.0+incompatible
 	k8s.io/klog v1.0.0
 	k8s.io/kubectl v0.24.0 // indirect
 	k8s.io/kubelet v0.24.2 // indirect
 	k8s.io/kubernetes v1.24.0
 	k8s.io/pod-security-admission v0.24.0
 	k8s.io/utils v0.0.0-20220210201930-3a6ce19ff2f9
+	kubevirt.io/api v0.59.0
+	kubevirt.io/client-go v0.59.0
 )
