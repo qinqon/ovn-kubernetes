@@ -95,6 +95,12 @@ export NUM_NODES=2
 
 FOCUS=$(echo ${@:1} | sed 's/ /\\s/g')
 
+pushd tools/tcprobe
+
+go build -o tcprobe .
+
+popd
+
 pushd e2e
 
 go mod download

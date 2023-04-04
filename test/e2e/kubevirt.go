@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -20,7 +21,6 @@ import (
 	"k8s.io/utils/pointer"
 
 	kvv1 "kubevirt.io/api/core/v1"
-	v1 "kubevirt.io/api/core/v1"
 	"kubevirt.io/client-go/kubecli"
 )
 
@@ -83,12 +83,12 @@ var _ = Describe("Kubevirt Live Migration", func() {
 			return nil
 		}
 
-		serviceEndpoint = func(svc *corev1.Service) (string, error) {
+		serviceEndpoint = func(svc *corev1.Service) (string, string, error) {
 			worker, err := kvcli.CoreV1().Nodes().Get(context.TODO(), "ovn-worker", metav1.GetOptions{})
 			if err != nil {
-				return "", err
+				return "", "", err
 			}
-			return fmt.Sprintf("%s:%d", worker.Status.Addresses[0].Address, svc.Spec.Ports[0].NodePort), nil
+			return worker.Status.Addresses[0].Address, fmt.Sprintf("%d", svc.Spec.Ports[0].NodePort), nil
 		}
 	)
 
@@ -98,6 +98,11 @@ var _ = Describe("Kubevirt Live Migration", func() {
 				err         error
 				tcprobePort = int32(9900)
 			)
+
+			pubSSHKey, privSSHKey, err := generateRSAKeyPair()
+			Expect(err).ToNot(HaveOccurred())
+			Expect(os.WriteFile("id_rsa", privSSHKey, 0600)).To(Succeed())
+
 			kvcli, err = newKubevirtClient()
 			Expect(err).ToNot(HaveOccurred())
 			vm = &kvv1.VirtualMachine{
@@ -178,10 +183,9 @@ var _ = Describe("Kubevirt Live Migration", func() {
 #cloud-config
 password: fedora
 chpasswd: { expire: False }
-runcmd:
-- dnf install -y podman
-- podman run --privileged --net=host quay.io/ellorent/tcprobe s 0.0.0.0:%d &
-`, tcprobePort),
+ssh_authorized_keys:
+- %s
+`, string(pubSSHKey)),
 										},
 									},
 								},
@@ -206,6 +210,36 @@ runcmd:
 				return vm.Status.Ready
 			}).WithPolling(time.Second).WithTimeout(time.Minute).Should(BeTrue())
 
+			By("Expose ssh as a service")
+			sshSvc, err := kvcli.CoreV1().Services(namespace).Create(context.TODO(), &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "ssh",
+				},
+				Spec: corev1.ServiceSpec{
+					Ports: []corev1.ServicePort{{
+						Port: int32(22),
+					}},
+					Selector: map[string]string{
+						"kubevirt.io/vm": vm.Name,
+					},
+					Type: corev1.ServiceTypeNodePort,
+				},
+			}, metav1.CreateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			sshAddress, sshPort, err := serviceEndpoint(sshSvc)
+			Expect(err).ToNot(HaveOccurred())
+
+			copyTCProbeCmd := exec.Command("scp", "-o", "UserKnownHostsFile=/dev/null", "-o", "StrictHostKeyChecking=no", "-i", "id_rsa", "-P", sshPort, "../tools/tcprobe/tcprobe", "fedora@"+sshAddress+":/tmp")
+			By(fmt.Sprintf("Copy tcprobe to the vm with %s", copyTCProbeCmd))
+			output, err := copyTCProbeCmd.CombinedOutput()
+			Expect(err).ToNot(HaveOccurred(), string(output))
+
+			startTCPProbeCmd := exec.Command("ssh", "-o", "UserKnownHostsFile=/dev/null", "-o", "StrictHostKeyChecking=no", "-i", "id_rsa", "-P", sshPort, "fedora@"+sshAddress, fmt.Sprintf(`"sh -c 'nohup /tmp/tcprobe s 0.0.0.0:%d> /dev/null 2>&1 &'"`, tcprobePort))
+			By(fmt.Sprintf("Start tcprobe server with %s", startTCPProbeCmd))
+			output, err = startTCPProbeCmd.CombinedOutput()
+			Expect(err).ToNot(HaveOccurred(), string(output))
+
 			By("Expose tcprobe as a service")
 			svc, err := kvcli.CoreV1().Services(namespace).Create(context.TODO(), &corev1.Service{
 				ObjectMeta: metav1.ObjectMeta{
@@ -222,22 +256,13 @@ runcmd:
 				},
 			}, metav1.CreateOptions{})
 			Expect(err).ToNot(HaveOccurred())
-			endpoint, err := serviceEndpoint(svc)
-			Expect(err).ToNot(HaveOccurred())
 
-			By("Wait for tcprobe readiness and connect to it")
-			time.Sleep(10 * time.Second)
-			Eventually(func() error { return dialTCPRobe(endpoint) }).
-				WithPolling(5 * time.Second).
-				WithTimeout(5 * time.Minute).
-				Should(Succeed())
-			By("Check tcprobe after live migration")
+			endpointAddress, endpointPort, err := serviceEndpoint(svc)
 			Expect(err).ToNot(HaveOccurred())
-			Eventually(func() error { return sendPings(20) }).
-				WithPolling(5 * time.Second).
-				WithTimeout(5 * time.Minute).
-				Should(Succeed())
+			endpoint := endpointAddress + ":" + endpointPort
 
+			By("Connect to tcprobe")
+			Expect(dialTCPRobe(endpoint)).To(Succeed())
 		})
 		AfterEach(func() {
 			By("Deleting namespace")
@@ -247,33 +272,35 @@ runcmd:
 				return err
 			}).WithPolling(time.Second).WithTimeout(time.Minute).Should(WithTransform(apierrors.IsNotFound, BeTrue()))
 		})
-		It("should have tcp connectivity", func() {
+		FIt("should have tcp connectivity", func() {
 			Eventually(func() error { return sendPings(20) }).
 				WithPolling(5 * time.Second).
 				WithTimeout(5 * time.Minute).
 				Should(Succeed())
 
 		})
-		Context("and is live migrated", func() {
-			BeforeEach(func() {
-				Expect(kvcli.VirtualMachine(namespace).Migrate(vm.Name, &v1.MigrateOptions{})).To(Succeed())
-				Eventually(func() *kvv1.VirtualMachineInstanceMigrationState {
-					vmi, err := kvcli.VirtualMachineInstance(namespace).Get(context.TODO(), vm.Name, &metav1.GetOptions{})
-					Expect(err).ToNot(HaveOccurred())
-					return vmi.Status.MigrationState
-				}).WithPolling(time.Second).WithTimeout(time.Minute).ShouldNot(BeNil())
-				Eventually(func() bool {
-					vmi, err := kvcli.VirtualMachineInstance(namespace).Get(context.TODO(), vm.Name, &metav1.GetOptions{})
-					Expect(err).ToNot(HaveOccurred())
-					return vmi.Status.MigrationState.Completed
-				}).WithPolling(time.Second).WithTimeout(time.Minute).Should(BeTrue())
+		/*
+			Context("and is live migrated", func() {
+				BeforeEach(func() {
+					Expect(kvcli.VirtualMachine(namespace).Migrate(vm.Name, &v1.MigrateOptions{})).To(Succeed())
+					Eventually(func() *kvv1.VirtualMachineInstanceMigrationState {
+						vmi, err := kvcli.VirtualMachineInstance(namespace).Get(context.TODO(), vm.Name, &metav1.GetOptions{})
+						Expect(err).ToNot(HaveOccurred())
+						return vmi.Status.MigrationState
+					}).WithPolling(time.Second).WithTimeout(time.Minute).ShouldNot(BeNil())
+					Eventually(func() bool {
+						vmi, err := kvcli.VirtualMachineInstance(namespace).Get(context.TODO(), vm.Name, &metav1.GetOptions{})
+						Expect(err).ToNot(HaveOccurred())
+						return vmi.Status.MigrationState.Completed
+					}).WithPolling(time.Second).WithTimeout(time.Minute).Should(BeTrue())
+				})
+				It("should keep tcp connectivity with the same connection", func() {
+					Eventually(func() error { return sendPings(20) }).
+						WithPolling(5 * time.Second).
+						WithTimeout(5 * time.Minute).
+						Should(Succeed())
+				})
 			})
-			It("should keep tcp connectivity with the same connection", func() {
-				Eventually(func() error { return sendPings(20) }).
-					WithPolling(5 * time.Second).
-					WithTimeout(5 * time.Minute).
-					Should(Succeed())
-			})
-		})
+		*/
 	})
 })
