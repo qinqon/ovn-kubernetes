@@ -27,6 +27,10 @@ type NetConf struct {
 	ExcludeSubnets string `json:"excludeSubnets,omitempty"`
 	// VLANID, valid in localnet topology network only
 	VLANID int `json:"vlanID,omitempty"`
+	// SkipIPConfig if true CNI will not configure the ip configuration, this
+	// is useful for live migration feature where ip configuration is done
+	// with DHCP
+	SkipIPConfig bool `json:"skipIPConfig,omitempty"`
 
 	// PciAddrs in case of using sriov or Auxiliry device name in case of SF
 	DeviceID string `json:"deviceID,omitempty"`

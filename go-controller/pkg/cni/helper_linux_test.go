@@ -23,7 +23,6 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/vishvananda/netlink"
 	kexec "k8s.io/utils/exec"
-	"k8s.io/utils/pointer"
 )
 
 func TestRenameLink(t *testing.T) {
@@ -334,8 +333,8 @@ func TestSetupNetwork(t *testing.T) {
 							NextHop: net.ParseIP("192.168.1.1"),
 						},
 					},
-					SkipIPConfig: pointer.Bool(true),
 				},
+				SkipIPConfig: true,
 			},
 			netLinkOpsMockHelper: []ovntest.TestifyMockHelper{
 				{OnCallMethodName: "LinkSetUp", OnCallMethodArgType: []string{"*mocks.Link"}, RetArgList: []interface{}{nil}},

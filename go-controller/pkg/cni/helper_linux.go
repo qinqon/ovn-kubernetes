@@ -154,7 +154,8 @@ func setupNetwork(link netlink.Link, ifInfo *PodInterfaceInfo) error {
 		}
 	}
 
-	if ifInfo.NetName == types.DefaultNetworkName && ifInfo.SkipIPConfig != nil && *ifInfo.SkipIPConfig {
+	if ifInfo.NetName == types.DefaultNetworkName && ifInfo.SkipIPConfig {
+		klog.Infof("Skipping ip configuration as requested by net-attach-def")
 		return nil
 	}
 

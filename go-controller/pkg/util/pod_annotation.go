@@ -65,9 +65,6 @@ type PodAnnotation struct {
 	Gateways []net.IP
 	// Routes are additional routes to add to the pod's network namespace
 	Routes []PodRoute
-	// SkipIPConfig if set to true will skip the pod's interface ip
-	// configuration
-	SkipIPConfig *bool
 }
 
 // PodRoute describes any routes to be added to the pod's network namespace
@@ -87,8 +84,6 @@ type podAnnotation struct {
 
 	IP      string `json:"ip_address,omitempty"`
 	Gateway string `json:"gateway_ip,omitempty"`
-
-	SkipIPConfig *bool `json:"skip_ip_config,omitempty"`
 }
 
 // Internal struct used to marshal PodRoute to the pod annotation
@@ -107,8 +102,7 @@ func MarshalPodAnnotation(annotations map[string]string, podInfo *PodAnnotation,
 		return nil, err
 	}
 	pa := podAnnotation{
-		MAC:          podInfo.MAC.String(),
-		SkipIPConfig: podInfo.SkipIPConfig,
+		MAC: podInfo.MAC.String(),
 	}
 
 	if len(podInfo.IPs) == 1 {
@@ -134,9 +128,6 @@ func MarshalPodAnnotation(annotations map[string]string, podInfo *PodAnnotation,
 					return nil, ErrOverridePodIPs
 				}
 			}
-		}
-		if pa.SkipIPConfig == nil {
-			pa.SkipIPConfig = existingPa.SkipIPConfig
 		}
 	}
 
@@ -243,9 +234,6 @@ func UnmarshalPodAnnotation(annotations map[string]string, nadName string) (*Pod
 		}
 		podAnnotation.Routes = append(podAnnotation.Routes, route)
 	}
-
-	podAnnotation.SkipIPConfig = a.SkipIPConfig
-
 	return podAnnotation, nil
 }
 

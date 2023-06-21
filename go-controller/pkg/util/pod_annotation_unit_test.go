@@ -11,7 +11,6 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/utils/pointer"
 
 	ovncnitypes "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/cni/types"
 	ovntest "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/testing"
@@ -40,29 +39,18 @@ func TestMarshalPodAnnotation(t *testing.T) {
 			expectedOutput: map[string]string{"k8s.ovn.org/pod-networks": `{"default":{"ip_addresses":["192.168.0.5/24"],"mac_address":"","ip_address":"192.168.0.5/24"}}`},
 		},
 		{
-			desc: "single IP assigned to pod with MAC, Gateway, SkipIpConfig and Routes NOT SPECIFIED",
-			inpPodAnnot: PodAnnotation{
-				IPs:          []*net.IPNet{ovntest.MustParseIPNet("192.168.0.5/24")},
-				SkipIPConfig: pointer.Bool(true),
-			},
-			expectedOutput: map[string]string{"k8s.ovn.org/pod-networks": `{"default":{"ip_addresses":["192.168.0.5/24"],"mac_address":"","ip_address":"192.168.0.5/24","skip_ip_config":true}}`},
-		},
-		{
-			desc:        "single IP assigned to pod with MAC, Gateway, Routes NOT SPECIFIED and skip_ip_config at annotations",
-			annotations: map[string]string{"k8s.ovn.org/pod-networks": `{"default":{"skip_ip_config":true}}`},
+			desc: "single IP assigned to pod with MAC, Gateway, Routes NOT SPECIFIED at annotations",
 			inpPodAnnot: PodAnnotation{
 				IPs: []*net.IPNet{ovntest.MustParseIPNet("192.168.0.5/24")},
 			},
-			expectedOutput: map[string]string{"k8s.ovn.org/pod-networks": `{"default":{"ip_addresses":["192.168.0.5/24"],"mac_address":"","ip_address":"192.168.0.5/24","skip_ip_config":true}}`},
+			expectedOutput: map[string]string{"k8s.ovn.org/pod-networks": `{"default":{"ip_addresses":["192.168.0.5/24"],"mac_address":"","ip_address":"192.168.0.5/24"}}`},
 		},
 		{
-			desc:        "single IP assigned to pod with MAC, Gateway, Routes NOT SPECIFIED and skip_ip_config at annotations and struct",
-			annotations: map[string]string{"k8s.ovn.org/pod-networks": `{"default":{"skip_ip_config":true}}`},
+			desc: "single IP assigned to pod with MAC, Gateway, Routes NOT SPECIFIED at annotations and struct",
 			inpPodAnnot: PodAnnotation{
-				IPs:          []*net.IPNet{ovntest.MustParseIPNet("192.168.0.5/24")},
-				SkipIPConfig: pointer.Bool(false),
+				IPs: []*net.IPNet{ovntest.MustParseIPNet("192.168.0.5/24")},
 			},
-			expectedOutput: map[string]string{"k8s.ovn.org/pod-networks": `{"default":{"ip_addresses":["192.168.0.5/24"],"mac_address":"","ip_address":"192.168.0.5/24","skip_ip_config":false}}`},
+			expectedOutput: map[string]string{"k8s.ovn.org/pod-networks": `{"default":{"ip_addresses":["192.168.0.5/24"],"mac_address":"","ip_address":"192.168.0.5/24"}}`},
 		},
 		{
 			desc: "multiple IPs assigned to pod with MAC, Gateway, Routes NOT SPECIFIED",
@@ -271,7 +259,7 @@ func TestUnmarshalPodAnnotation(t *testing.T) {
 		},
 		{
 			desc:        "verify successful unmarshal of pod annotation",
-			inpAnnotMap: map[string]string{"k8s.ovn.org/pod-networks": `{"default":{"ip_addresses":["192.168.0.5/24"],"mac_address":"0a:58:fd:98:00:01","gateway_ips":["192.168.0.1"],"routes":[{"dest":"192.168.1.0/24","nextHop":"192.168.1.1"}],"ip_address":"192.168.0.5/24","gateway_ip":"192.168.0.1", "skip_ip_config": true}}`},
+			inpAnnotMap: map[string]string{"k8s.ovn.org/pod-networks": `{"default":{"ip_addresses":["192.168.0.5/24"],"mac_address":"0a:58:fd:98:00:01","gateway_ips":["192.168.0.1"],"routes":[{"dest":"192.168.1.0/24","nextHop":"192.168.1.1"}],"ip_address":"192.168.0.5/24","gateway_ip":"192.168.0.1"}}`},
 			expectedOutput: &PodAnnotation{
 				MAC:      mac("0a:58:fd:98:00:01"),
 				IPs:      ips("192.168.0.5/24"),
@@ -279,7 +267,6 @@ func TestUnmarshalPodAnnotation(t *testing.T) {
 				Routes: []PodRoute{
 					route("192.168.1.0/24", "192.168.1.1"),
 				},
-				SkipIPConfig: pointer.Bool(true),
 			},
 		},
 		{

@@ -191,6 +191,8 @@ parse_args() {
                                                 ;;
             -ikv | --install-kubevirt)          KIND_INSTALL_KUBEVIRT=true
                                                 ;;
+            -im | --install-multus)             KIND_INSTALL_MULTUS=true
+                                                ;;
             -ha | --ha-enabled )                OVN_HA=true
                                                 ;;
             -me | --multicast-enabled)          OVN_MULTICAST_ENABLE=true
@@ -333,6 +335,7 @@ parse_args() {
             --isolated )                        OVN_ISOLATED=true
                                                 ;;
             -mne | --multi-network-enable )     ENABLE_MULTI_NET=true
+                                                KIND_INSTALL_MULTUS=true
                                                 ;;
             -ic | --enable-interconnect )       OVN_ENABLE_INTERCONNECT=true
                                                 ;;
@@ -360,6 +363,7 @@ print_params() {
      echo "KIND_INSTALL_METALLB = $KIND_INSTALL_METALLB"
      echo "KIND_INSTALL_PLUGINS = $KIND_INSTALL_PLUGINS"
      echo "KIND_INSTALL_KUBEVIRT = $KIND_INSTALL_KUBEVIRT"
+     echo "KIND_INSTALL_MULTUS = $KIND_INSTALL_MULTUS"
      echo "OVN_HA = $OVN_HA"
      echo "RUN_IN_CONTAINER = $RUN_IN_CONTAINER"
      echo "KIND_CLUSTER_NAME = $KIND_CLUSTER_NAME"
@@ -507,6 +511,7 @@ set_default_params() {
   KIND_INSTALL_METALLB=${KIND_INSTALL_METALLB:-false}
   KIND_INSTALL_PLUGINS=${KIND_INSTALL_PLUGINS:-false}
   KIND_INSTALL_KUBEVIRT=${KIND_INSTALL_KUBEVIRT:-false}
+  KIND_INSTALL_MULTUS=${KIND_INSTALL_MULTUS:-false}
   OVN_HA=${OVN_HA:-false}
   KIND_LOCAL_REGISTRY=${KIND_LOCAL_REGISTRY:-false}
   KIND_LOCAL_REGISTRY_NAME=${KIND_LOCAL_REGISTRY_NAME:-kind-registry}
@@ -1321,11 +1326,16 @@ install_ovn
 if [ "$KIND_INSTALL_INGRESS" == true ]; then
   install_ingress
 fi
-if [ "$ENABLE_MULTI_NET" == true ]; then
+
+if [ "$KIND_INSTALL_MULTUS" == true ]; then
   install_multus
+fi
+
+if [ "$ENABLE_MULTI_NET" == true ]; then
   install_mpolicy_crd
   docker_create_second_disconnected_interface "underlay"  # localnet scenarios require an extra interface
 fi
+
 kubectl_wait_pods
 sleep_until_pods_settle
 # Launch IPsec pods last to make sure that CSR signing logic works

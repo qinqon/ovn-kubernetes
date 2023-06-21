@@ -99,7 +99,7 @@ func GetPodWithAnnotations(ctx context.Context, getter PodInfoGetter,
 
 // PodAnnotation2PodInfo creates PodInterfaceInfo from Pod annotations and additional attributes
 func PodAnnotation2PodInfo(podAnnotation map[string]string, podNADAnnotation *util.PodAnnotation, podUID,
-	netdevname, nadName, netName string, mtu int) (*PodInterfaceInfo, error) {
+	netdevname, nadName, netName string, mtu int, skipIPConfig bool) (*PodInterfaceInfo, error) {
 	var err error
 	// get pod's annotation of the given NAD if it is not available
 	if podNADAnnotation == nil {
@@ -129,6 +129,7 @@ func PodAnnotation2PodInfo(podAnnotation map[string]string, podNADAnnotation *ut
 		NetName:              netName,
 		NADName:              nadName,
 		EnableUDPAggregation: config.Default.EnableUDPAggregation,
+		SkipIPConfig:         skipIPConfig,
 	}
 	return podInterfaceInfo, nil
 }

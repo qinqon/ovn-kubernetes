@@ -50,6 +50,7 @@ type PodInterfaceInfo struct {
 	PodUID               string `json:"pod-uid"`
 	NetdevName           string `json:"vf-netdev-name"`
 	EnableUDPAggregation bool   `json:"enable-udp-aggregation"`
+	SkipIPConfig         bool   `json:"skip-ip-config"`
 
 	// network name, for default network, it is "default", otherwise it is net-attach-def's netconf spec name
 	NetName string `json:"netName"`

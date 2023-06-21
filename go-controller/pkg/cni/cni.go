@@ -138,7 +138,7 @@ func (pr *PodRequest) cmdAdd(kubeAuth *KubeAPIAuth, clientset *ClientSet) (*Resp
 	}
 
 	podInterfaceInfo, err := PodAnnotation2PodInfo(annotations, podNADAnnotation, pr.PodUID, netdevName,
-		pr.nadName, pr.netName, pr.CNIConf.MTU)
+		pr.nadName, pr.netName, pr.CNIConf.MTU, pr.CNIConf.SkipIPConfig)
 	if err != nil {
 		return nil, err
 	}

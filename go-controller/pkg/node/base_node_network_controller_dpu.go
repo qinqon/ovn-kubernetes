@@ -48,7 +48,7 @@ func (bnnc *BaseNodeNetworkController) addDPUPodForNAD(pod *kapi.Pod, dpuCD *uti
 	podDesc := fmt.Sprintf("pod %s/%s for NAD %s", pod.Namespace, pod.Name, nadName)
 	klog.Infof("Adding %s on DPU", podDesc)
 	podInterfaceInfo, err := cni.PodAnnotation2PodInfo(pod.Annotations, nil,
-		string(pod.UID), "", nadName, netName, config.Default.MTU)
+		string(pod.UID), "", nadName, netName, config.Default.MTU, false)
 	if err != nil {
 		return fmt.Errorf("failed to get pod interface information of %s: %v. retrying", podDesc, err)
 	}

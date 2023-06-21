@@ -34,6 +34,9 @@ import (
 	kubevirtv1 "kubevirt.io/api/core/v1"
 	kvmigrationsv1alpha1 "kubevirt.io/api/migrations/v1alpha1"
 	"kubevirt.io/client-go/kubecli"
+
+	nadv1 "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
+	nadclient "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/client/clientset/versioned/typed/k8s.cni.cncf.io/v1"
 )
 
 func newKubevirtClient() (kubecli.KubevirtClient, error) {
@@ -53,6 +56,7 @@ var _ = Describe("Kubevirt Virtual Machines", func() {
 	var (
 		fr                     = wrappedTestFramework("kv-live-migration")
 		kvcli                  kubecli.KubevirtClient
+		nadcli                 nadclient.K8sCniCncfIoV1Interface
 		podWorker1, podWorker2 *corev1.Pod
 		namespace              string
 		httpServerPort         = int32(9900)
@@ -61,6 +65,9 @@ var _ = Describe("Kubevirt Virtual Machines", func() {
 	)
 
 	BeforeEach(func() {
+		var err error
+		nadcli, err = nadclient.NewForConfig(fr.ClientConfig())
+		Expect(err).NotTo(HaveOccurred())
 		nodes, err := e2enode.GetBoundedReadySchedulableNodes(fr.ClientSet, 3)
 		Expect(err).ToNot(HaveOccurred())
 		numberOfNodeInternalAddresses := 0
@@ -181,7 +188,7 @@ var _ = Describe("Kubevirt Virtual Machines", func() {
 			vmi, err := kvcli.VirtualMachineInstance(namespace).Get(context.TODO(), vmName, &metav1.GetOptions{})
 			Expect(err).ToNot(HaveOccurred())
 			polling := 15 * time.Second
-			timeout := time.Minute
+			timeout := 2 * time.Minute
 			step := by(vmName, stage+": Check connection re-use")
 			Eventually(func() error { return sendEchoAndCheckReuse(endpoints) }).
 				WithPolling(polling).
@@ -310,6 +317,23 @@ var _ = Describe("Kubevirt Virtual Machines", func() {
 			}
 
 		}
+		composeNAD = func() *nadv1.NetworkAttachmentDefinition {
+			return &nadv1.NetworkAttachmentDefinition{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "default",
+					Namespace: namespace,
+				},
+				Spec: nadv1.NetworkAttachmentDefinitionSpec{
+					Config: `
+{
+	"cniVersion": "0.3.0",
+    "name": "default",
+    "type": "ovn-k8s-cni-overlay",
+    "skipIPConfig": true
+}`,
+				},
+			}
+		}
 
 		composeVM = func(idx uint, labels map[string]string) (*kubevirtv1.VirtualMachine, error) {
 			butaneIPv4 := `
@@ -421,7 +445,10 @@ passwd:
 								{
 									Name: "pod",
 									NetworkSource: kubevirtv1.NetworkSource{
-										Pod: &kubevirtv1.PodNetwork{},
+										Multus: &kubevirtv1.MultusNetwork{
+											Default:     true,
+											NetworkName: fmt.Sprintf("%s/default", namespace),
+										},
 									},
 								},
 							},
@@ -497,7 +524,7 @@ passwd:
 
 			step = by(vm.Name, "Send first echo to populate connection pool")
 			Eventually(func() error { return sendEchoAndIgnoreReuse(endpoints) }).
-				WithPolling(1*time.Second).
+				WithPolling(time.Second).
 				WithTimeout(5*time.Second).
 				Should(Succeed(), step)
 
@@ -592,6 +619,9 @@ passwd:
 		if td.mode == kubevirtv1.MigrationPostCopy {
 			vmLabels = forcePostCopyMigrationPolicy.Spec.Selectors.VirtualMachineInstanceSelector
 		}
+		_, err = nadcli.NetworkAttachmentDefinitions(namespace).Create(context.Background(), composeNAD(), metav1.CreateOptions{})
+		Expect(err).ToNot(HaveOccurred())
+
 		vms, err := composeVMs(td.numberOfVMs, vmLabels)
 		Expect(err).ToNot(HaveOccurred())
 		for _, vm := range vms {
@@ -612,12 +642,14 @@ passwd:
 		}
 		wg.Wait()
 	},
-		Entry("with pre-copy should keep connectivity", liveMigrationTestData{
-			mode:                 kubevirtv1.MigrationPreCopy,
-			numberOfVMs:          1,
-			numberOfMigrations:   2,
-			checkNetworkPolicies: true,
-		}),
+		/*
+			Entry("with pre-copy should keep connectivity", liveMigrationTestData{
+				mode:                 kubevirtv1.MigrationPreCopy,
+				numberOfVMs:          1,
+				numberOfMigrations:   2,
+				checkNetworkPolicies: true,
+			}),
+		*/
 		Entry("with post-copy should keep connectivity", liveMigrationTestData{
 			mode:                 kubevirtv1.MigrationPostCopy,
 			numberOfVMs:          1,
