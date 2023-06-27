@@ -176,15 +176,9 @@ passwd:
 		}
 
 		serviceEndpoints = func(svc *corev1.Service) ([]string, error) {
-			worker, err := fr.ClientSet.CoreV1().Nodes().Get(context.TODO(), "ovn-worker", metav1.GetOptions{})
-			if err != nil {
-				return nil, err
-			}
 			endpoints := []string{}
-			for _, address := range worker.Status.Addresses {
-				if address.Type != corev1.NodeHostName {
-					endpoints = append(endpoints, net.JoinHostPort(address.Address, fmt.Sprintf("%d", svc.Spec.Ports[0].NodePort)))
-				}
+			for _, address := range svc.Status.LoadBalancer.Ingress {
+				endpoints = append(endpoints, net.JoinHostPort(address.Hostname, fmt.Sprintf("%d", httpServerPort)))
 			}
 			return endpoints, nil
 		}
@@ -201,7 +195,7 @@ passwd:
 					Selector: map[string]string{
 						kubevirtv1.VirtualMachineNameLabel: vmName,
 					},
-					Type:           corev1.ServiceTypeNodePort,
+					Type:           corev1.ServiceTypeLoadBalancer,
 					IPFamilyPolicy: &ipFamilyPolicy,
 				},
 			}
@@ -295,6 +289,15 @@ passwd:
 		composeAgnhostPod = func(name, namespace, nodeName string, args ...string) *v1.Pod {
 			agnHostPod := e2epod.NewAgnhostPod(namespace, name, nil, nil, nil, args...)
 			agnHostPod.Spec.NodeName = nodeName
+			agnHostPod.Spec.Containers[0].SecurityContext.AllowPrivilegeEscalation = pointer.Bool(false)
+			agnHostPod.Spec.Containers[0].SecurityContext.Capabilities = &corev1.Capabilities{
+				Drop: []corev1.Capability{"ALL"},
+			}
+			agnHostPod.Spec.SecurityContext.RunAsNonRoot = pointer.Bool(true)
+			agnHostPod.Spec.SecurityContext.SeccompProfile = &corev1.SeccompProfile{
+				Type: corev1.SeccompProfileTypeRuntimeDefault,
+			}
+
 			return agnHostPod
 		}
 

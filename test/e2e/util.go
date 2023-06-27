@@ -898,6 +898,7 @@ func wrappedTestFramework(basename string) *framework.Framework {
 	f := newPrivelegedTestFramework(basename)
 	// inject dumping dbs on failure
 	ginkgo.JustAfterEach(func() {
+		return
 		if !ginkgo.CurrentGinkgoTestDescription().Failed {
 			return
 		}
