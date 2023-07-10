@@ -17,9 +17,11 @@ import (
 	libovsdbclient "github.com/ovn-org/libovsdb/client"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kube"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kubevirt"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdbops"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/nbdb"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/sbdb"
+	ovntypes "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/pkg/errors"
 
 	hotypes "github.com/ovn-org/ovn-kubernetes/go-controller/hybrid-overlay/pkg/types"
@@ -414,6 +416,30 @@ func (oc *DefaultNetworkController) addNode(node *kapi.Node) ([]*net.IPNet, erro
 	err = oc.ensureNodeLogicalNetwork(node, hostSubnets)
 	if err != nil {
 		return nil, err
+	}
+
+	// For live migrated pods the switch manager has to be refill in
+	// case the node has take over the vm subnet
+	liveMigratablePods, err := kubevirt.FindLiveMigratablePods(oc.watchFactory)
+	if err != nil {
+		return nil, err
+	}
+	for _, liveMigratablePod := range liveMigratablePods {
+		annotation, err := util.UnmarshalPodAnnotation(liveMigratablePod.Annotations, ovntypes.DefaultNetworkName)
+		if err != nil {
+			continue
+		}
+		ok := false
+		switchName, ok := oc.lsManager.FindSwitchBySubnets(annotation.IPs)
+		// If switch manager contains the pod subnet we have to
+		// do allocatePodIP
+		if !ok {
+			continue
+		}
+
+		if _, err := oc.allocatePodIPsForSwitch(liveMigratablePod, annotation, ovntypes.DefaultNetworkName, switchName); err != nil {
+			return nil, err
+		}
 	}
 
 	return hostSubnets, nil

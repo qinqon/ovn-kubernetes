@@ -180,3 +180,27 @@ func CleanUpForVM(controllerName string, nbClient libovsdbclient.Client, watchFa
 	}
 	return nil
 }
+
+// FindLiveMigratablePods will return all the pods with a `vm.kubevirt.io`
+// label filtered by `kubevirt.io/allow-pod-bridge-network-live-migration`
+// annotation
+func FindLiveMigratablePods(watchFactory *factory.WatchFactory) ([]*corev1.Pod, error) {
+	vmPods, err := watchFactory.GetAllPodsBySelector(
+		metav1.LabelSelector{
+			MatchExpressions: []metav1.LabelSelectorRequirement{{
+				Key:      kubevirtv1.VirtualMachineNameLabel,
+				Operator: metav1.LabelSelectorOpExists,
+			}},
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed looking for live migratable pods: %v", err)
+	}
+	liveMigratablePods := []*corev1.Pod{}
+	for _, vmPod := range vmPods {
+		if IsPodLiveMigratable(vmPod) {
+			liveMigratablePods = append(liveMigratablePods, vmPod)
+		}
+	}
+	return liveMigratablePods, nil
+}
