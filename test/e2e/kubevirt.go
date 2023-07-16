@@ -500,7 +500,10 @@ passwd:
 			Eventually(addressByFamily(ipv4, kvcli, vmi)).
 				WithPolling(time.Second).
 				WithTimeout(5*time.Minute).
-				Should(HaveLen(1), step)
+				Should(HaveLen(1), func() string {
+					output, _ := kubevirt.RunCommand(kvcli, vmi, "journalctl -u nmstate", 2*time.Second)
+					return step + " -> journal nmstate: " + output
+				})
 
 			if isDualStack {
 				output, err := kubevirt.RunCommand(kvcli, vmi, `echo '{"interfaces":[{"name":"enp1s0","type":"ethernet","state":"up","ipv4":{"enabled":true,"dhcp":true},"ipv6":{"enabled":true,"dhcp":true,"autoconf":false}}],"routes":{"config":[{"destination":"::/0","next-hop-interface":"enp1s0","next-hop-address":"fe80::1"}]}}' |nmstatectl apply`, 5*time.Second)

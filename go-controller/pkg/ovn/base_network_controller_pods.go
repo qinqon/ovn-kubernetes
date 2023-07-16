@@ -41,14 +41,22 @@ func (bnc *BaseNetworkController) allocatePodIPs(pod *kapi.Pod,
 // attachted to, for example hypershift kubevirt provider live migration.
 func (bnc *BaseNetworkController) allocatePodIPsOnSwitch(pod *kapi.Pod,
 	annotations *util.PodAnnotation, nadName string, switchName string) (expectedLogicalPortName string, err error) {
+	klog.Infof("deleteme, allocatePodIPsOnSwitch, 1, util.PodScheduled(pod): %t", util.PodScheduled(pod))
+	klog.Infof("deleteme, allocatePodIPsOnSwitch, 1, util.PodWantsHostNetwork(pod): %t", util.PodScheduled(pod))
+	klog.Infof("deleteme, allocatePodIPsOnSwitch, 1, util.PodCompleted(pod): %t", util.PodScheduled(pod))
 
 	if !util.PodScheduled(pod) || util.PodWantsHostNetwork(pod) || util.PodCompleted(pod) {
+		klog.Infof("deleteme, !util.PodScheduled(pod) || util.PodWantsHostNetwork(pod) || util.PodCompleted(pod): true")
 		return "", nil
 	}
+	klog.Infof("deleteme, !util.PodScheduled(pod) || util.PodWantsHostNetwork(pod) || util.PodCompleted(pod): false")
 	// skip nodes that are not running ovnk (inferred from host subnets)
 	if bnc.lsManager.IsNonHostSubnetSwitch(switchName) {
+		klog.Infof("deleteme, allocatePodIPsOnSwitch, 2, bnc.lsManager.IsNonHostSubnetSwitch(%s): true", switchName)
 		return "", nil
 	}
+	klog.Infof("deleteme, allocatePodIPsOnSwitch, 2, bnc.lsManager.IsNonHostSubnetSwitch(%s): false", switchName)
+
 	expectedLogicalPortName = bnc.GetLogicalPortName(pod, nadName)
 	// it is possible to try to add a pod here that has no node. For example if a pod was deleted with
 	// a finalizer, and then the node was removed. In this case the pod will still exist in a running state.
@@ -58,29 +66,36 @@ func (bnc *BaseNetworkController) allocatePodIPsOnSwitch(pod *kapi.Pod,
 		if util.PodTerminating(pod) {
 			klog.Infof("Ignoring IP allocation for terminating pod: %s/%s, on deleted "+
 				"node: %s", pod.Namespace, pod.Name, pod.Spec.NodeName)
+			klog.Infof("deleteme, allocatePodIPsOnSwitch, 4, %s/%s", pod.Namespace, pod.Name)
 			return expectedLogicalPortName, nil
 		} else if bnc.doesNetworkRequireIPAM() {
 			// unknown condition how we are getting a non-terminating pod without a node here
 			klog.Errorf("Pod IP allocation found for a non-existent node in API with unknown "+
 				"condition. Pod: %s/%s, node: %s", pod.Namespace, pod.Name, pod.Spec.NodeName)
+			klog.Infof("deleteme, allocatePodIPsOnSwitch, 5, %s/%s", pod.Namespace, pod.Name)
 		}
 	}
+	klog.Infof("deleteme, allocatePodIPsOnSwitch, 7, %s/%s", pod.Namespace, pod.Name)
 	if err := bnc.waitForNodeLogicalSwitchSubnetsInCache(switchName); err != nil {
 		return expectedLogicalPortName, fmt.Errorf("failed to wait for switch %s to be added to cache. IP allocation may fail!",
 			switchName)
 	}
+	klog.Infof("deleteme, allocatePodIPsOnSwitch, 8, %s/%s", pod.Namespace, pod.Name)
 	if err = bnc.lsManager.AllocateIPs(switchName, annotations.IPs); err != nil {
 		if err == ipallocator.ErrAllocated {
 			// already allocated: log an error but not stop syncPod from continuing
 			klog.Errorf("Already allocated IPs: %s for pod: %s on switchName: %s",
 				util.JoinIPNetIPs(annotations.IPs, " "), expectedLogicalPortName,
 				switchName)
+			klog.Infof("deleteme, allocatePodIPsOnSwitch, 9, %s/%s", pod.Namespace, pod.Name)
 		} else {
+			klog.Infof("deleteme, allocatePodIPsOnSwitch, 10, %s/%s", pod.Namespace, pod.Name)
 			return expectedLogicalPortName, fmt.Errorf("couldn't allocate IPs: %s for pod: %s on switch: %s"+
 				" error: %v", util.JoinIPNetIPs(annotations.IPs, " "), expectedLogicalPortName,
 				switchName, err)
 		}
 	}
+	klog.Infof("deleteme, allocatePodIPsOnSwitch, 11, %s/%s", pod.Namespace, pod.Name)
 	return expectedLogicalPortName, nil
 }
 
