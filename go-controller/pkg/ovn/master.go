@@ -1018,6 +1018,7 @@ func (oc *DefaultNetworkController) getOVNClusterRouterPortToJoinSwitchIfAddrs()
 }
 func (oc *DefaultNetworkController) allocateSyncMigratablePodIPs(node *kapi.Node) error {
 	allocatePodIPsOnSwitchWrapFn := func(liveMigratablePod *kapi.Pod, liveMigratablePodAnnotation *util.PodAnnotation, switchName, nadName string) (string, error) {
+		klog.Infof("deleteme, allocateSyncMigratablePodIPs, 1")
 		return oc.allocatePodIPsOnSwitch(liveMigratablePod, liveMigratablePodAnnotation, switchName, nadName)
 	}
 	return kubevirt.AllocateSyncMigratablePodsIPsOnNode(oc.watchFactory, oc.lsManager, node.Name, ovntypes.DefaultNetworkName, allocatePodIPsOnSwitchWrapFn)

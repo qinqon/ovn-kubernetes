@@ -538,7 +538,10 @@ passwd:
 			Eventually(addressByFamily(ipv4, kvcli, vmi)).
 				WithPolling(time.Second).
 				WithTimeout(5*time.Minute).
-				Should(HaveLen(1), step)
+				Should(HaveLen(1), func() string {
+					output, _ := kubevirt.RunCommand(kvcli, vmi, "journalctl -u nmstate", 2*time.Second)
+					return step + " -> journal nmstate: " + output
+				})
 
 			if isDualStack {
 				step = by(vm.Name, "Wait for virtual machine to receive IPv6 address from DHCP")

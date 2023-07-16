@@ -242,7 +242,7 @@ func LoginToFedora(virtClient kubecli.KubevirtClient, vmi *kubevirtv1.VirtualMac
 
 	// Do not login, if we already logged in
 	loggedInPromptRegex := fmt.Sprintf(
-		`(\[%s@%s ~\]\$ |\[root@%s %s\]\# )`, user, vmi.Name, vmi.Name, user,
+		`(\[%s@(%s|localhost) ~\]\$ |\[root@(%s|localhost) %s\]\# )`, user, vmi.Name, vmi.Name, user,
 	)
 	b := []expect.Batcher{
 		&expect.BSnd{S: "\n"},

@@ -7,6 +7,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ktypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
+	"k8s.io/klog/v2"
 
 	kubevirtv1 "kubevirt.io/api/core/v1"
 
@@ -224,6 +225,7 @@ func SyncVirtualMachines(nbClient libovsdbclient.Client, vms map[ktypes.Namespac
 // label filtered by `kubevirt.io/allow-pod-bridge-network-live-migration`
 // annotation
 func FindLiveMigratablePods(watchFactory *factory.WatchFactory) ([]*corev1.Pod, error) {
+	klog.Infof("deleteme, FindLiveMigratablePods, 1")
 	vmPods, err := watchFactory.GetAllPodsBySelector(
 		metav1.LabelSelector{
 			MatchExpressions: []metav1.LabelSelectorRequirement{{
@@ -232,6 +234,7 @@ func FindLiveMigratablePods(watchFactory *factory.WatchFactory) ([]*corev1.Pod, 
 			}},
 		},
 	)
+	klog.Infof("deleteme, FindLiveMigratablePods, len(vmPods): %d", len(vmPods))
 	if err != nil {
 		return nil, fmt.Errorf("failed looking for live migratable pods: %v", err)
 	}
@@ -241,6 +244,7 @@ func FindLiveMigratablePods(watchFactory *factory.WatchFactory) ([]*corev1.Pod, 
 			liveMigratablePods = append(liveMigratablePods, vmPod)
 		}
 	}
+	klog.Infof("deleteme, FindLiveMigratablePods, len(liveMigratablePods): %d", len(liveMigratablePods))
 	return liveMigratablePods, nil
 }
 
@@ -286,11 +290,14 @@ func AllocateSyncMigratablePodIPsOnZone(watchFactory *factory.WatchFactory, lsMa
 // AllocateSyncMigratablePodIPsOnNode will refill ip pool in
 // case the node has take over the vm subnet for live migrated vms
 func AllocateSyncMigratablePodsIPsOnNode(watchFactory *factory.WatchFactory, lsManager *logicalswitchmanager.LogicalSwitchManager, nodeName, nadName string, allocatePodIPsOnSwitch func(*corev1.Pod, *util.PodAnnotation, string, string) (string, error)) error {
+	klog.Infof("deleteme, AllocateSyncMigratablePodsIPsOnNode, 1")
 	liveMigratablePods, err := FindLiveMigratablePods(watchFactory)
 	if err != nil {
 		return err
 	}
+	klog.Infof("deleteme, AllocateSyncMigratablePodsIPsOnNode, 2")
 	for _, liveMigratablePod := range liveMigratablePods {
+		klog.Infof("deleteme, AllocateSyncMigratablePodsIPsOnNode, 3, %s/%s", liveMigratablePod.Namespace, liveMigratablePod.Name)
 		if _, _, _, err := allocateSyncMigratablePodIPs(watchFactory, lsManager, nodeName, nadName, liveMigratablePod, allocatePodIPsOnSwitch); err != nil {
 			return err
 		}
