@@ -127,8 +127,8 @@ pushd e2e
 go mod download
 go test -timeout=0 -v . \
         -ginkgo.v \
+        -ginkgo.noColor \
         -ginkgo.focus ${FOCUS:-.} \
-        -ginkgo.flakeAttempts ${FLAKE_ATTEMPTS:-2} \
         -ginkgo.skip="${SKIPPED_TESTS}" \
         -provider skeleton \
         -kubeconfig ${KUBECONFIG} \

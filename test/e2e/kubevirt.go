@@ -579,6 +579,28 @@ passwd:
 			}()
 		}
 
+		vmLabels := map[string]string{}
+		if td.mode == kubevirtv1.MigrationPostCopy {
+			vmLabels = forcePostCopyMigrationPolicy.Spec.Selectors.VirtualMachineInstanceSelector
+		}
+		vms, err := composeVMs(td.numberOfVMs, vmLabels)
+		Expect(err).ToNot(HaveOccurred())
+		for _, vm := range vms {
+			By(fmt.Sprintf("Create virtual machine %s at %s", vm.Name, time.Now().String()))
+			_, err = kvcli.VirtualMachine(namespace).Create(context.Background(), vm)
+			Expect(err).ToNot(HaveOccurred())
+		}
+		return
+
+		for _, vm := range vms {
+			By(fmt.Sprintf("Wait for virtual machine %s readiness", vm.Name))
+			Eventually(func() bool {
+				vm, err = kvcli.VirtualMachine(namespace).Get(context.Background(), vm.Name, &metav1.GetOptions{})
+				Expect(err).ToNot(HaveOccurred())
+				return vm.Status.Ready
+			}).WithPolling(time.Second).WithTimeout(5 * time.Minute).Should(BeTrue())
+		}
+
 		By("Creating a test pod at all worker nodes")
 		for _, selectedNode := range selectedNodes {
 			httpServerWorkerNode := composeAgnhostPod(
@@ -605,25 +627,6 @@ passwd:
 				WithTimeout(time.Minute).
 				WithPolling(time.Second).
 				Should(Succeed())
-		}
-
-		By("Create virtual machines")
-		vmLabels := map[string]string{}
-		if td.mode == kubevirtv1.MigrationPostCopy {
-			vmLabels = forcePostCopyMigrationPolicy.Spec.Selectors.VirtualMachineInstanceSelector
-		}
-		vms, err := composeVMs(td.numberOfVMs, vmLabels)
-		Expect(err).ToNot(HaveOccurred())
-		for _, vm := range vms {
-			vm, err = kvcli.VirtualMachine(namespace).Create(context.Background(), vm)
-			Expect(err).ToNot(HaveOccurred())
-		}
-		for _, vm := range vms {
-			Eventually(func() bool {
-				vm, err = kvcli.VirtualMachine(namespace).Get(context.Background(), vm.Name, &metav1.GetOptions{})
-				Expect(err).ToNot(HaveOccurred())
-				return vm.Status.Ready
-			}).WithPolling(time.Second).WithTimeout(5 * time.Minute).Should(BeTrue())
 		}
 
 		wg.Add(int(td.numberOfVMs))

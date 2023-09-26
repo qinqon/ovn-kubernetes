@@ -1322,11 +1322,24 @@ function install_kubevirt() {
 
     echo "Deploy latest nighly build Kubevirt"
     if [ "$(kubectl get kubevirts -n kubevirt kubevirt -ojsonpath='{.status.phase}')" != "Deployed" ]; then
-      kubectl apply -f "${nightly_build_base_url}/${latest}/kubevirt-operator.yaml"
-      kubectl apply -f "${nightly_build_base_url}/${latest}/kubevirt-cr.yaml"
+      curl -sL "${nightly_build_base_url}/${latest}/kubevirt-operator.yaml" |sed "s#quay\.io/kubevirt/virt.operator.*#quay.io/ellorent/virt-operator:latest#" | kubectl apply -f -
+      use_emulation="false"
       if ! is_nested_virt_enabled; then
-        kubectl -n kubevirt patch kubevirt kubevirt --type=merge --patch '{"spec":{"configuration":{"developerConfiguration":{"useEmulation":true}}}}'
+        use_emulation="true"
       fi
+    cat <<EOF | oc apply -f -      
+apiVersion: kubevirt.io/v1
+kind: KubeVirt
+metadata:
+  name: kubevirt
+  namespace: kubevirt
+spec:
+  configuration:
+    developerConfiguration:
+      useEmulation: $use_emulation
+      logVerbosity:
+        virtAPI: 5
+EOF
     fi
     if ! kubectl wait -n kubevirt kv kubevirt --for condition=Available --timeout 15m; then
         kubectl get pod -n kubevirt -l || true
@@ -1336,6 +1349,17 @@ function install_kubevirt() {
             kubectl logs --all-containers=true -n kubevirt $p || true
         done
     fi
+  
+  #TODO: Show MTU at different places
+  ip l 
+  KIND_NODES=$(kind get nodes --name "${KIND_CLUSTER_NAME}")
+  for n in $KIND_NODES; do
+    $OCI_BIN exec "$n" ip l
+  done
+  for pod in $(kubectl get pod -n kubevirt -l kubevirt.io=virt-api --no-headers  -o custom-columns=":metadata.name"); do
+    node=$(kubectl get pod -n kubevirt $pod --no-headers  -o custom-columns=":spec.nodeName")
+    $OCI_BIN exec -i $node bash -xe  -s kubevirt $pod < run_pod_netns.sh ip l
+  done
 }
 
 check_dependencies
