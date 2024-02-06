@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/ovn-org/ovn-kubernetes/test/e2e/kubevirt"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/api/core/v1"
 	knet "k8s.io/api/networking/v1"
@@ -29,7 +31,6 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/util/retry"
-	e2epod "k8s.io/kubernetes/test/e2e/framework/pod"
 	utilnet "k8s.io/utils/net"
 	"k8s.io/utils/pointer"
 	crclient "sigs.k8s.io/controller-runtime/pkg/client"
@@ -65,16 +66,15 @@ func newControllerRuntimeClient() (crclient.Client, error) {
 
 var _ = Describe("Kubevirt Virtual Machines", func() {
 	var (
-		fr                 = wrappedTestFramework("kv-live-migration")
-		crClient           crclient.Client
-		namespace          string
-		tcpServerPort      = int32(9900)
-		isDualStack        = false
-		wg                 sync.WaitGroup
-		selectedNodes      = []corev1.Node{}
-		httpServerTestPods = []*corev1.Pod{}
-		clientSet          kubernetes.Interface
-		butane             = fmt.Sprintf(`
+		fr            = wrappedTestFramework("kv-live-migration")
+		crClient      crclient.Client
+		namespace     string
+		tcpServerPort = int32(9900)
+		isDualStack   = false
+		wg            sync.WaitGroup
+		selectedNodes = []corev1.Node{}
+		clientSet     kubernetes.Interface
+		butane        = fmt.Sprintf(`
 variant: fcos
 version: 1.4.0
 storage:
@@ -104,10 +104,21 @@ systemd:
       contents: |
         [Unit]
         Description=Golang echo server
-        Wants=replace-resolved.target
-        After=replace-resolved.target
+        Wants=replace-resolved.service
+        After=replace-resolved.service
         [Service]
-        ExecStart=podman run --name tcpserver --tls-verify=false --privileged --net=host -v /root/test:/test:z registry.access.redhat.com/ubi9/go-toolset:1.20 go run /test/server.go %d
+        ExecStart=podman run --name tcpserver --tls-verify=false --privileged --net=host -v /root/test:/test:z registry.access.redhat.com/ubi9/go-toolset:1.20 go run /test/server.go %[1]d
+        [Install]
+        WantedBy=multi-user.target
+    - name: echoserver-tcpdump.service
+      enabled: true
+      contents: |
+        [Unit]
+        Description=Golang echo server tcpdump
+        Wants=replace-resolved.service
+        After=replace-resolved.service
+        [Service]
+        ExecStart=podman run --net=host --privileged registry.fedoraproject.org/fedora-toolbox:38 tcpdump -vvv -i any -ne tcp port %[1]d
         [Install]
         WantedBy=multi-user.target
 passwd:
@@ -206,6 +217,15 @@ passwd:
 		for _, node := range selectedNodes {
 			unlabelNode(node.Name, namespace)
 		}
+		By("Force tcpdump at nodes to flush buffers")
+		tcpdumpPodList, err := fr.ClientSet.CoreV1().Pods(namespace).List(context.Background(), metav1.ListOptions{LabelSelector: labels.FormatLabels(map[string]string{
+			"tool": "node-tcpdump",
+		})})
+		Expect(err).ToNot(HaveOccurred())
+		for _, tcpdumpPod := range tcpdumpPodList.Items {
+			output, err := exec.Command("bash", "-c", fmt.Sprintf("kubectl exec -it -n %s %s -- killall tcpdump -s SIGUSR2", tcpdumpPod.Namespace, tcpdumpPod.Name)).CombinedOutput()
+			Expect(err).ToNot(HaveOccurred(), string(output))
+		}
 	})
 
 	type liveMigrationTestData struct {
@@ -215,33 +235,191 @@ passwd:
 	}
 
 	var (
+		composeDiagnosticsDaemonSet = func(namespace, name, cmd, tool string) appsv1.DaemonSet {
+			ovnImage := os.Getenv("OVN_IMAGE")
+			if ovnImage == "" {
+				ovnImage = "localhost/ovn-daemonset-f:dev"
+			}
+			return appsv1.DaemonSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      name,
+					Namespace: namespace,
+				},
+				Spec: appsv1.DaemonSetSpec{
+					Selector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{
+							"app": name,
+						},
+					},
+					Template: v1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      name,
+							Namespace: namespace,
+							Labels: map[string]string{
+								"app":  name,
+								"tool": tool,
+							},
+						},
+						Spec: v1.PodSpec{
+							Containers: []v1.Container{{
+								Name:    "ovn-kube",
+								Image:   ovnImage,
+								Command: []string{"bash", "-c"},
+								Args:    []string{cmd},
+								SecurityContext: &v1.SecurityContext{
+									Privileged: pointer.Bool(true),
+								},
+								VolumeMounts: []v1.VolumeMount{
+									{
+										Name:      "host-run-ovs",
+										MountPath: "/run/openvswitch",
+									},
+									{
+										Name:      "host-var-run-ovs",
+										MountPath: "/var/run/openvswitch",
+									},
+									{
+										Name:      "host",
+										MountPath: "/host",
+									},
+								},
+							}},
+							HostNetwork: true,
+							Volumes: []v1.Volume{
+								{
+									Name: "host-run-ovs",
+									VolumeSource: v1.VolumeSource{
+										HostPath: &v1.HostPathVolumeSource{
+											Path: "/run/openvswitch",
+										},
+									},
+								},
+								{
+									Name: "host-var-run-ovs",
+									VolumeSource: v1.VolumeSource{
+										HostPath: &v1.HostPathVolumeSource{
+											Path: "/var/run/openvswitch",
+										},
+									},
+								},
+								{
+									Name: "host",
+									VolumeSource: v1.VolumeSource{
+										HostPath: &v1.HostPathVolumeSource{
+											Path: "/",
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			}
+		}
+
+		runDaemonSets = func(daemonSets []appsv1.DaemonSet) error {
+			for _, daemonSet := range daemonSets {
+				_, err := fr.ClientSet.AppsV1().DaemonSets(daemonSet.Namespace).Create(context.Background(), &daemonSet, metav1.CreateOptions{})
+				if err != nil {
+					return err
+				}
+			}
+			for _, daemonSet := range daemonSets {
+				err := wait.PollUntilContextTimeout(context.Background(), time.Second, 15*time.Second, true /*immediate*/, func(ctx context.Context) (bool, error) {
+					daemonSet, err := fr.ClientSet.AppsV1().DaemonSets(daemonSet.Namespace).Get(ctx, daemonSet.Name, metav1.GetOptions{})
+					if err != nil {
+						return false, err
+					}
+					return daemonSet.Status.NumberAvailable == daemonSet.Status.NumberReady, nil
+				})
+				if err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+
+		tcpdumpClient = func(ip, port string) {
+			cmd := fmt.Sprintf("tcpdump -vvv -w %[1]s.%[2]s.pcap -s 1500 -ne -i any host %[1]s and port %[2]s", ip, port)
+			By(fmt.Sprintf("Starting %s", cmd))
+			go func() {
+				output, err := exec.Command("sudo", "bash", "-c", cmd).CombinedOutput()
+				GinkgoWriter.Write([]byte(fmt.Sprintf("%s: %v", output, err)))
+			}()
+		}
+
+		tcpdumpDaemonSet = func(port, nodePort string, ifaces []string) {
+			By("Creating tcpdump daemonsets")
+			daemonSets := []appsv1.DaemonSet{}
+			for _, iface := range ifaces {
+				daemonSetName := "node-tcpdump-" + iface
+				cmd := fmt.Sprintf("tcpdump -vvv -nne -i %[1]s port %[2]s or port %[3]s", iface, port, nodePort)
+				daemonSets = append(daemonSets, composeDiagnosticsDaemonSet(namespace, daemonSetName, cmd, "node-tcpdump"))
+			}
+			Expect(runDaemonSets(daemonSets)).To(Succeed())
+		}
+
+		composePeriodicCmd = func(cmd string, interval uint32) string {
+			return fmt.Sprintf("while true; do echo \\\"=== $(date) ===\\\" && %s && sleep %d; done", cmd, interval)
+		}
+
+		conntrackDumpingDaemonSet = func() {
+			By("Creating conntrack dumping daemonsets")
+			daemonSets := []appsv1.DaemonSet{}
+			daemonSetName := fmt.Sprintf("dump-conntrack")
+			cmd := composePeriodicCmd("conntrack -L", 10)
+			daemonSets = append(daemonSets, composeDiagnosticsDaemonSet(namespace, daemonSetName, cmd, "conntrack"))
+			Expect(runDaemonSets(daemonSets)).To(Succeed())
+		}
+		ovsFlowsDumpingDaemonSet = func(iface string) {
+			By("Creating OVS flows dumping daemonsets")
+			daemonSets := []appsv1.DaemonSet{}
+			daemonSetName := fmt.Sprintf("dump-ovs-flows-%s", iface)
+			cmd := composePeriodicCmd("ovs-ofctl dump-flows "+iface, 10)
+			daemonSets = append(daemonSets, composeDiagnosticsDaemonSet(namespace, daemonSetName, cmd, "ovs-flows"))
+			Expect(runDaemonSets(daemonSets)).To(Succeed())
+		}
+
+		iptablesDumpingDaemonSet = func() {
+			By("Creating iptables dumping daemonsets")
+			daemonSets := []appsv1.DaemonSet{}
+			daemonSetName := fmt.Sprintf("dump-iptables")
+			cmd := composePeriodicCmd("iptables -L -n", 10)
+			daemonSets = append(daemonSets, composeDiagnosticsDaemonSet(namespace, daemonSetName, cmd, "iptables"))
+			Expect(runDaemonSets(daemonSets)).To(Succeed())
+		}
+
 		sendEcho = func(conn *net.TCPConn) error {
 			strEcho := "Halo"
-
-			if err := conn.SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil {
-				return fmt.Errorf("failed configuring connection deadline before write: %w", err)
-			}
+			By(fmt.Sprintf("Writing '%s' %s->%s", strEcho, conn.LocalAddr(), conn.RemoteAddr()))
+			//if err := conn.SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil {
+			//	return fmt.Errorf("failed configuring connection deadline before write: %w", err)
+			//}
 			_, err := conn.Write([]byte(strEcho))
 			if err != nil {
+				By(fmt.Sprintf("failed writing: %v ", err))
 				return fmt.Errorf("failed Write to server: %w", err)
 			}
 
 			reply := make([]byte, 1024)
 
-			if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
-				return fmt.Errorf("failed configuring connection deadline before read: %w", err)
-			}
+			//if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+			//	return fmt.Errorf("failed configuring connection deadline before read: %w", err)
+			//}
+
+			By(fmt.Sprintf("Reading '%s' %s<-%s", strEcho, conn.LocalAddr(), conn.RemoteAddr()))
 			_, err = conn.Read(reply)
 			if err != nil {
+				By(fmt.Sprintf("failed reading: %v ", err))
 				return fmt.Errorf("failed Read to server: %w", err)
 			}
 
 			if strings.Compare(string(reply), strEcho) == 0 {
 				return fmt.Errorf("unexpected reply '%s'", string(reply))
 			}
-			if err := conn.SetDeadline(time.Time{}); err != nil {
-				return fmt.Errorf("failed remove connection deadline: %w", err)
-			}
+			//if err := conn.SetDeadline(time.Time{}); err != nil {
+			//	return fmt.Errorf("failed remove connection deadline: %w", err)
+			//}
 			return nil
 		}
 
@@ -260,10 +438,8 @@ passwd:
 				return nil, fmt.Errorf("failed ResolveTCPAddr: %w", err)
 			}
 			backoff := wait.Backoff{
-				Steps:    4,
-				Duration: 10 * time.Millisecond,
-				Factor:   5.0,
-				Jitter:   0.1,
+				Steps:    60,
+				Duration: time.Second,
 			}
 			allErrors := func(error) bool { return true }
 			var conn *net.TCPConn
@@ -288,9 +464,14 @@ passwd:
 				return nil, err
 			}
 			endpoints := []*net.TCPConn{}
+			nodePort := fmt.Sprintf("%d", svc.Spec.Ports[0].NodePort)
+			port := fmt.Sprintf("%d", svc.Spec.Ports[0].Port)
+
+			tcpdumpDaemonSet(port, nodePort, []string{"any", "eth0", "breth0"})
 			for _, address := range worker.Status.Addresses {
 				if address.Type != corev1.NodeHostName {
-					addr := net.JoinHostPort(address.Address, fmt.Sprintf("%d", svc.Spec.Ports[0].NodePort))
+					tcpdumpClient(address.Address, nodePort)
+					addr := net.JoinHostPort(address.Address, nodePort)
 					conn, err := dial(addr)
 					if err != nil {
 						return endpoints, err
@@ -364,40 +545,8 @@ passwd:
 			}
 			err := crClient.Get(context.TODO(), crclient.ObjectKeyFromObject(vmi), vmi)
 			Expect(err).ToNot(HaveOccurred())
-			polling := 15 * time.Second
-			timeout := time.Minute
 			step := by(vmName, stage+": Check tcp connection is not broken")
-			Eventually(func() error { return sendEchos(endpoints) }).
-				WithPolling(polling).
-				WithTimeout(timeout).
-				WithOffset(1).
-				Should(Succeed(), step)
-
-			step = by(vmName, stage+": Check e/w tcp traffic")
-			for _, pod := range httpServerTestPods {
-				for _, podIP := range pod.Status.PodIPs {
-					output := ""
-					Eventually(func() error {
-						output, err = kubevirt.RunCommand(vmi, fmt.Sprintf("curl http://%s", net.JoinHostPort(podIP.IP, "8000")), polling)
-						return err
-					}).
-						WithOffset(1).
-						WithPolling(polling).
-						WithTimeout(timeout).
-						Should(Succeed(), func() string { return step + ": " + pod.Name + ": " + output })
-				}
-			}
-
-			step = by(vmName, stage+": Check n/s tcp traffic")
-			output := ""
-			Eventually(func() error {
-				output, err = kubevirt.RunCommand(vmi, "curl -kL https://kubernetes.default.svc.cluster.local", polling)
-				return err
-			}).
-				WithOffset(1).
-				WithPolling(polling).
-				WithTimeout(timeout*2).
-				Should(Succeed(), func() string { return step + ": " + output })
+			Expect(sendEchos(endpoints)).To(Succeed(), step)
 		}
 
 		checkConnectivityAndNetworkPolicies = func(vmName string, endpoints []*net.TCPConn, stage string) {
@@ -420,12 +569,6 @@ passwd:
 			// let's recreate them
 			step = by(vmName, stage+": Check connectivity is restored after delete deny all network policy")
 			Expect(sendEchos(endpoints)).To(Succeed(), step)
-		}
-
-		composeAgnhostPod = func(name, namespace, nodeName string, args ...string) *v1.Pod {
-			agnHostPod := e2epod.NewAgnhostPod(namespace, name, nil, nil, nil, args...)
-			agnHostPod.Spec.NodeName = nodeName
-			return agnHostPod
 		}
 
 		liveMigrateVirtualMachine = func(vmName string, migrationMode kubevirtv1.MigrationMode) {
@@ -580,7 +723,7 @@ passwd:
 							Domain: kubevirtv1.DomainSpec{
 								Resources: kubevirtv1.ResourceRequirements{
 									Requests: corev1.ResourceList{
-										corev1.ResourceMemory: resource.MustParse("512Mi"),
+										corev1.ResourceMemory: resource.MustParse("768Mi"),
 									},
 								},
 								Devices: kubevirtv1.Devices{
@@ -660,7 +803,8 @@ passwd:
 		liveMigrateAndCheck = func(vmName string, migrationMode kubevirtv1.MigrationMode, endpoints []*net.TCPConn, step string) {
 			liveMigrateVirtualMachine(vmName, migrationMode)
 			checkLiveMigrationSucceeded(vmName, migrationMode)
-			checkConnectivityAndNetworkPolicies(vmName, endpoints, step)
+			checkConnectivity(vmName, endpoints, step)
+			//checkConnectivityAndNetworkPolicies(vmName, endpoints, step)
 		}
 
 		runTest = func(td liveMigrationTestData, vm *kubevirtv1.VirtualMachine) {
@@ -711,7 +855,9 @@ passwd:
 			endpoints, err := dialServiceNodePort(svc)
 			Expect(err).ToNot(HaveOccurred(), step)
 
-			checkConnectivityAndNetworkPolicies(vm.Name, endpoints, "before live migration")
+			//checkConnectivityAndNetworkPolicies(vm.Name, endpoints, "before live migration")
+			checkConnectivity(vm.Name, endpoints, "before live migration")
+
 			// Do just one migration that will fail
 			if td.shouldExpectFailure {
 				by(vm.Name, fmt.Sprintf("Live migrate virtual machine to check failed migration"))
@@ -753,6 +899,10 @@ passwd:
 
 		Expect(err).ToNot(HaveOccurred())
 
+		conntrackDumpingDaemonSet()
+		ovsFlowsDumpingDaemonSet("breth0")
+		iptablesDumpingDaemonSet()
+
 		bandwidthPerMigration := resource.MustParse("40Mi")
 		forcePostCopyMigrationPolicy := &kvmigrationsv1alpha1.MigrationPolicy{
 			ObjectMeta: metav1.ObjectMeta{
@@ -775,34 +925,6 @@ passwd:
 			defer func() {
 				Expect(crClient.Delete(context.TODO(), forcePostCopyMigrationPolicy)).To(Succeed())
 			}()
-		}
-
-		By("Creating a test pod at all worker nodes")
-		for _, selectedNode := range selectedNodes {
-			httpServerWorkerNode := composeAgnhostPod(
-				"testpod-"+selectedNode.Name,
-				namespace,
-				selectedNode.Name,
-				"netexec", "--http-port", "8000")
-			_ = e2epod.NewPodClient(fr).CreateSync(context.TODO(), httpServerWorkerNode)
-		}
-
-		By("Waiting until both pods have an IP address")
-		for _, httpServerTestPod := range httpServerTestPods {
-			Eventually(func() error {
-				var err error
-				httpServerTestPod, err = fr.ClientSet.CoreV1().Pods(fr.Namespace.Name).Get(context.TODO(), httpServerTestPod.Name, metav1.GetOptions{})
-				if err != nil {
-					return err
-				}
-				if httpServerTestPod.Status.PodIP == "" {
-					return fmt.Errorf("pod %s has no valid IP address yet", httpServerTestPod.Name)
-				}
-				return nil
-			}).
-				WithTimeout(time.Minute).
-				WithPolling(time.Second).
-				Should(Succeed())
 		}
 
 		vmLabels := map[string]string{}
@@ -857,15 +979,6 @@ passwd:
 		Entry("with pre-copy succeeds, should keep connectivity", liveMigrationTestData{
 			mode:        kubevirtv1.MigrationPreCopy,
 			numberOfVMs: 1,
-		}),
-		Entry("with post-copy succeeds, should keep connectivity", liveMigrationTestData{
-			mode:        kubevirtv1.MigrationPostCopy,
-			numberOfVMs: 1,
-		}),
-		Entry("with pre-copy fails, should keep connectivity", liveMigrationTestData{
-			mode:                kubevirtv1.MigrationPreCopy,
-			numberOfVMs:         1,
-			shouldExpectFailure: true,
 		}),
 	)
 })

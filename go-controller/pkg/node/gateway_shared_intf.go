@@ -18,8 +18,10 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
+	"sigs.k8s.io/yaml"
 
 	kapi "k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	discovery "k8s.io/api/discovery/v1"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	ktypes "k8s.io/apimachinery/pkg/types"
@@ -909,6 +911,34 @@ func (npw *nodePortWatcher) UpdateEndpointSlice(oldEpSlice, newEpSlice *discover
 	// the number of calls than needed for an update endpoint slice
 	var err error
 	var errors []error
+	if strings.Contains(newEpSlice.Namespace, "kv-live-migration") {
+		oldEndpointsYAML, err := yaml.Marshal(oldEpSlice.Endpoints)
+		if err != nil {
+			return err
+		}
+		newEndpointsYAML, err := yaml.Marshal(newEpSlice.Endpoints)
+		if err != nil {
+			return err
+		}
+		klog.V(5).Infof("DELETEME, UpdateEndpointSlice, oldEpSlice.Endpoints: %s", string(oldEndpointsYAML))
+		klog.V(5).Infof("DELETEME, UpdateEndpointSlice, newEpSlice.Endpoints: %s", string(newEndpointsYAML))
+
+		pods, err := npw.watchFactory.GetPods(newEpSlice.Namespace)
+		if err != nil {
+			return err
+		}
+		virtLauncherPods := []*v1.Pod{}
+		for _, pod := range pods {
+			if strings.Contains(pod.Name, "virt-launcher") {
+				virtLauncherPods = append(virtLauncherPods, pod)
+			}
+		}
+		virtLauncherPodsYAML, err := yaml.Marshal(virtLauncherPods)
+		if err != nil {
+			return err
+		}
+		klog.V(5).Infof("DELETEME, UpdateEndpointSlice, virt launcher pods: %s", string(virtLauncherPodsYAML))
+	}
 
 	namespacedName, err := util.ServiceNamespacedNameFromEndpointSlice(newEpSlice)
 	if err != nil {

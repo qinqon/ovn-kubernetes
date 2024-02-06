@@ -26,7 +26,7 @@ RUN echo "Running on $BUILDPLATFORM, building for $TARGETPLATFORM"
 RUN INSTALL_PKGS=" \
 	python3-pip python3-pyyaml bind-utils procps-ng openssl numactl-libs firewalld-filesystem \
 	libpcap hostname kubernetes-client util-linux \
-        ovn ovn-central ovn-host python3-openvswitch tcpdump openvswitch-test python3-pyOpenSSL \
+        ovn ovn-central ovn-host python3-openvswitch tcpdump conntrack openvswitch-test python3-pyOpenSSL \
 	iptables iproute iputils strace socat koji \
         libreswan openvswitch-ipsec \
         " && \

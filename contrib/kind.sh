@@ -1347,11 +1347,13 @@ function install_kubevirt() {
 
     echo "Deploy latest nighly build Kubevirt"
     if [ "$(kubectl get kubevirts -n kubevirt kubevirt -ojsonpath='{.status.phase}')" != "Deployed" ]; then
-      kubectl apply -f "${kubevirt_release_url}/kubevirt-operator.yaml"
+      local virt_controller_image=quay.io/ellorent/virt-controller:11350
+      curl -L "${kubevirt_release_url}/kubevirt-operator.yaml" | sed "s#env:#env:\n        - name: VIRT_CONTROLLER_IMAGE\n          value: $virt_controller_image#" | kubectl apply -f -
       kubectl apply -f "${kubevirt_release_url}/kubevirt-cr.yaml"
       if ! is_nested_virt_enabled; then
         kubectl -n kubevirt patch kubevirt kubevirt --type=merge --patch '{"spec":{"configuration":{"developerConfiguration":{"useEmulation":true}}}}'
       fi
+      kubectl -n kubevirt patch kubevirt kubevirt --type=merge --patch '{"spec":{"configuration":{"developerConfiguration":{"logVerbosity": {"virtController": 3}}}}}'
     fi
     if ! kubectl wait -n kubevirt kv kubevirt --for condition=Available --timeout 15m; then
         kubectl get pod -n kubevirt -l || true

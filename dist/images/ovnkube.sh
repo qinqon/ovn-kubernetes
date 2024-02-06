@@ -705,6 +705,7 @@ ovs-server() {
     fi
     sleep 15
   done
+  ovs-appctl vlog/set dbg
 }
 
 cleanup-ovs-server() {
