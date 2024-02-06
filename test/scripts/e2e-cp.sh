@@ -136,6 +136,8 @@ pushd e2e
 go mod download
 go test -test.timeout 180m -v . \
         -ginkgo.v \
+        -ginkgo.no-color \
+        --delete-namespace=false \
         -ginkgo.focus ${FOCUS:-.} \
         -ginkgo.timeout 3h \
         -ginkgo.flake-attempts ${FLAKE_ATTEMPTS:-2} \

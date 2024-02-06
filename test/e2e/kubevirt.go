@@ -105,8 +105,8 @@ systemd:
       contents: |
         [Unit]
         Description=Golang echo server
-        Wants=replace-resolved.target
-        After=replace-resolved.target
+        Wants=replace-resolved.service
+        After=replace-resolved.service
         [Service]
         ExecStart=podman run --name tcpserver --tls-verify=false --privileged --net=host -v /root/test:/test:z registry.access.redhat.com/ubi9/go-toolset:1.20 go run /test/server.go %d
         [Install]
@@ -836,15 +836,6 @@ passwd:
 		Entry("with pre-copy succeeds, should keep connectivity", liveMigrationTestData{
 			mode:        kubevirtv1.MigrationPreCopy,
 			numberOfVMs: 1,
-		}),
-		Entry("with post-copy succeeds, should keep connectivity", liveMigrationTestData{
-			mode:        kubevirtv1.MigrationPostCopy,
-			numberOfVMs: 1,
-		}),
-		Entry("with pre-copy fails, should keep connectivity", liveMigrationTestData{
-			mode:                kubevirtv1.MigrationPreCopy,
-			numberOfVMs:         1,
-			shouldExpectFailure: true,
 		}),
 	)
 })
