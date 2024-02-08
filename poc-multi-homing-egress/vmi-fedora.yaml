@@ -1,0 +1,209 @@
+---
+apiVersion: k8s.cni.cncf.io/v1
+kind: NetworkAttachmentDefinition
+metadata:
+  name: l2-network-1
+spec:
+  config: |2
+    {
+            "cniVersion": "0.3.1",
+            "name": "l2-network-1",
+            "type": "ovn-k8s-cni-overlay",
+            "topology":"layer2",
+            "subnets": "192.168.0.0/24",
+            "netAttachDefName": "default/l2-network-1",
+            "excludeSubnets": "192.168.0.0/29"
+    }
+---
+apiVersion: k8s.cni.cncf.io/v1
+kind: NetworkAttachmentDefinition
+metadata:
+  name: l2-network-2
+spec:
+  config: |2
+    {
+            "cniVersion": "0.3.1",
+            "name": "l2-network-2",
+            "type": "ovn-k8s-cni-overlay",
+            "topology":"layer2",
+            "subnets": "192.168.0.0/24",
+            "netAttachDefName": "default/l2-network-2",
+            "excludeSubnets": "192.168.0.0/29"
+    }
+---
+apiVersion: kubevirt.io/v1
+kind: VirtualMachineInstance
+metadata:
+  name: ovn-worker-l2-network-1
+spec:
+  nodeSelector:
+    kubernetes.io/hostname: ovn-worker
+  domain:
+    devices:
+      disks:
+      - disk:
+          bus: virtio
+        name: containerdisk
+      - disk:
+          bus: virtio
+        name: cloudinitdisk
+      interfaces:
+      - bridge: {}
+        name: multus
+      rng: {}
+    resources:
+      requests:
+        memory: 1024M
+  networks:
+  - name: multus
+    multus: 
+      networkName: l2-network-1
+  terminationGracePeriodSeconds: 0
+  volumes:
+  - containerDisk:
+      image: quay.io/containerdisks/fedora:39
+    name: containerdisk
+  - cloudInitNoCloud:
+      networkData: |
+        version: 2
+        routes:
+        - to: 0.0.0.0/0
+          via: 192.168.0.1
+      userData: |-
+        #cloud-config
+        password: fedora
+        chpasswd: { expire: False }
+    name: cloudinitdisk
+---
+apiVersion: kubevirt.io/v1
+kind: VirtualMachineInstance
+metadata:
+  name: ovn-worker-l2-network-2
+spec:
+  nodeSelector:
+    kubernetes.io/hostname: ovn-worker
+  domain:
+    devices:
+      disks:
+      - disk:
+          bus: virtio
+        name: containerdisk
+      - disk:
+          bus: virtio
+        name: cloudinitdisk
+      interfaces:
+      - bridge: {}
+        name: multus
+      rng: {}
+    resources:
+      requests:
+        memory: 1024M
+  networks:
+  - name: multus
+    multus: 
+      networkName: l2-network-2
+  terminationGracePeriodSeconds: 0
+  volumes:
+  - containerDisk:
+      image: quay.io/containerdisks/fedora:39
+    name: containerdisk
+  - cloudInitNoCloud:
+      networkData: |
+        version: 2
+        routes:
+        - to: 0.0.0.0/0
+          via: 192.168.0.1
+      userData: |-
+        #cloud-config
+        password: fedora
+        chpasswd: { expire: False }
+    name: cloudinitdisk
+---
+apiVersion: kubevirt.io/v1
+kind: VirtualMachineInstance
+metadata:
+  name: ovn-worker2-l2-network-1
+spec:
+  nodeSelector:
+    kubernetes.io/hostname: ovn-worker2
+  domain:
+    devices:
+      disks:
+      - disk:
+          bus: virtio
+        name: containerdisk
+      - disk:
+          bus: virtio
+        name: cloudinitdisk
+      interfaces:
+      - bridge: {}
+        name: multus
+      rng: {}
+    resources:
+      requests:
+        memory: 1024M
+  networks:
+  - name: multus
+    multus: 
+      networkName: l2-network-1
+  terminationGracePeriodSeconds: 0
+  volumes:
+  - containerDisk:
+      image: quay.io/containerdisks/fedora:39
+    name: containerdisk
+  - cloudInitNoCloud:
+      networkData: |
+        version: 2
+        routes:
+        - to: 0.0.0.0/0
+          via: 192.168.0.1
+      userData: |-
+        #cloud-config
+        password: fedora
+        chpasswd: { expire: False }
+    name: cloudinitdisk
+---
+apiVersion: kubevirt.io/v1
+kind: VirtualMachineInstance
+metadata:
+  name: ovn-worker2-l2-network-2
+spec:
+  nodeSelector:
+    kubernetes.io/hostname: ovn-worker2
+  domain:
+    devices:
+      disks:
+      - disk:
+          bus: virtio
+        name: containerdisk
+      - disk:
+          bus: virtio
+        name: cloudinitdisk
+      interfaces:
+      - bridge: {}
+        name: multus
+      rng: {}
+    resources:
+      requests:
+        memory: 1024M
+  networks:
+  - name: multus
+    multus: 
+      networkName: l2-network-2
+  terminationGracePeriodSeconds: 0
+  volumes:
+  - containerDisk:
+      image: quay.io/containerdisks/fedora:39
+    name: containerdisk
+  - cloudInitNoCloud:
+      networkData: |
+        version: 2
+        routes:
+        - to: 0.0.0.0/0
+          via: 192.168.0.1
+      userData: |-
+        #cloud-config
+        password: fedora
+        chpasswd: { expire: False }
+    name: cloudinitdisk
+
