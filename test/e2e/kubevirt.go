@@ -64,7 +64,6 @@ func newControllerRuntimeClient() (crclient.Client, error) {
 }
 
 var _ = Describe("Kubevirt Virtual Machines", func() {
-
 	var (
 		fr                 = wrappedTestFramework("kv-live-migration")
 		crClient           crclient.Client
@@ -262,13 +261,19 @@ passwd:
 			}
 			allErrors := func(error) bool { return true }
 			var conn *net.TCPConn
-			return conn, retry.OnError(backoff, allErrors, func() error {
+			if err := retry.OnError(backoff, allErrors, func() error {
 				conn, err = net.DialTCP("tcp", nil, tcpAddr)
 				if err != nil {
 					return fmt.Errorf("failed DialTCP: %w", err)
 				}
 				return nil
-			})
+			}); err != nil {
+				return nil, err
+			}
+			if err := conn.SetKeepAlive(true); err != nil {
+				return nil, err
+			}
+			return conn, nil
 		}
 
 		dialServiceNodePort = func(svc *corev1.Service) ([]*net.TCPConn, error) {
@@ -284,13 +289,22 @@ passwd:
 					if err != nil {
 						return endpoints, err
 					}
-					if err := conn.SetKeepAlive(true); err != nil {
-						return nil, err
-					}
 					endpoints = append(endpoints, conn)
 				}
 			}
 			return endpoints, nil
+		}
+
+		reconnect = func(conns []*net.TCPConn) error {
+			for i, conn := range conns {
+				conn.Close()
+				conn, err := dial(conn.RemoteAddr().String())
+				if err != nil {
+					return err
+				}
+				conns[i] = conn
+			}
+			return nil
 		}
 		composeService = func(name, vmName string, port int32) *corev1.Service {
 			ipFamilyPolicy := corev1.IPFamilyPolicyPreferDualStack
@@ -394,9 +408,10 @@ passwd:
 
 			Expect(fr.ClientSet.NetworkingV1().NetworkPolicies(namespace).Delete(context.TODO(), policy.Name, metav1.DeleteOptions{})).To(Succeed())
 
-			// Wait some time for network policy removal to take effect
-			time.Sleep(1 * time.Second)
+			Expect(reconnect(endpoints)).To(Succeed(), step)
 
+			// After apply a deny all, connection can be broken
+			// let's recreate them
 			step = by(vmName, stage+": Check connectivity is restored after delete deny all network policy")
 			Expect(sendEchos(endpoints)).To(Succeed(), step)
 		}
