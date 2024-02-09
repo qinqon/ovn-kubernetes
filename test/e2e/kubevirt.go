@@ -218,8 +218,8 @@ passwd:
 		sendEcho = func(conn *net.TCPConn) error {
 			strEcho := "Halo"
 
-			if err := conn.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
-				return fmt.Errorf("failed configuring connection deadline: %w", err)
+			if err := conn.SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil {
+				return fmt.Errorf("failed configuring connection deadline before write: %w", err)
 			}
 			_, err := conn.Write([]byte(strEcho))
 			if err != nil {
@@ -228,6 +228,9 @@ passwd:
 
 			reply := make([]byte, 1024)
 
+			if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+				return fmt.Errorf("failed configuring connection deadline before read: %w", err)
+			}
 			_, err = conn.Read(reply)
 			if err != nil {
 				return fmt.Errorf("failed Read to server: %w", err)
@@ -235,6 +238,9 @@ passwd:
 
 			if strings.Compare(string(reply), strEcho) == 0 {
 				return fmt.Errorf("unexpected reply '%s'", string(reply))
+			}
+			if err := conn.SetDeadline(time.Time{}); err != nil {
+				return fmt.Errorf("failed remove connection deadline: %w", err)
 			}
 			return nil
 		}
