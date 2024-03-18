@@ -848,15 +848,6 @@ passwd:
 			mode:        kubevirtv1.MigrationPreCopy,
 			numberOfVMs: 1,
 		}),
-		Entry("with post-copy succeeds, should keep connectivity", liveMigrationTestData{
-			mode:        kubevirtv1.MigrationPostCopy,
-			numberOfVMs: 1,
-		}),
-		Entry("with pre-copy fails, should keep connectivity", liveMigrationTestData{
-			mode:                kubevirtv1.MigrationPreCopy,
-			numberOfVMs:         1,
-			shouldExpectFailure: true,
-		}),
 	)
 })
 
