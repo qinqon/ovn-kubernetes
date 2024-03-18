@@ -189,6 +189,11 @@ go mod download
 go test -test.timeout 180m -v . \
         -ginkgo.v \
         -ginkgo.focus ${FOCUS:-.} \
+        --delete-namespace=false \
+        --collect-tcpdump=true\
+        --collect-ovsflows=true \
+        --collect-iptables=true \
+        --collect-contrack=true \
         -ginkgo.timeout 3h \
         -ginkgo.flake-attempts ${FLAKE_ATTEMPTS:-2} \
         -ginkgo.skip="${SKIPPED_TESTS}" \
