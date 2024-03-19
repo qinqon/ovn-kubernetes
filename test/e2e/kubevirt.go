@@ -671,6 +671,15 @@ passwd:
 			Expect(err).ToNot(HaveOccurred())
 			Expect(kubevirt.LoginToFedora(vmi, "core", "fedora")).To(Succeed(), step)
 
+			step = by(vm.Name, "Wait systemd multi-user.target to be activated")
+			Eventually(func() error {
+				_, err := kubevirt.RunCommand(vmi, "systemctl is-active multi-user.target", time.Second)
+				return err
+			}).
+				WithPolling(time.Second).
+				WithTimeout(20*time.Second).
+				Should(Succeed(), step)
+
 			step = by(vm.Name, "Wait for virtual machine to receive IPv4 address from DHCP")
 			Eventually(addressByFamily(ipv4, vmi)).
 				WithPolling(time.Second).

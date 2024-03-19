@@ -268,18 +268,18 @@ jobs:
         # num-nodes-per-zone : "<integer value>"
         # forwarding : ["", "disable-forwarding"]
         include:
-          - {"target": "kv-live-migration", "ha": "noHA", "gateway-mode": "local", "ipfamily": "ipv4", "disable-snat-multiple-gws": "SnatGW",   "second-bridge": "1br", "ic": "ic-disabled", "num-workers": "3", "idx": 1}
-          - {"target": "kv-live-migration", "ha": "noHA", "gateway-mode": "local", "ipfamily": "ipv4", "disable-snat-multiple-gws": "SnatGW",   "second-bridge": "1br", "ic": "ic-disabled", "num-workers": "3", "idx": 2}
-          - {"target": "kv-live-migration", "ha": "noHA", "gateway-mode": "local", "ipfamily": "ipv4", "disable-snat-multiple-gws": "SnatGW",   "second-bridge": "1br", "ic": "ic-disabled", "num-workers": "3", "idx": 3}
-          - {"target": "kv-live-migration", "ha": "noHA", "gateway-mode": "local", "ipfamily": "ipv4", "disable-snat-multiple-gws": "SnatGW",   "second-bridge": "1br", "ic": "ic-disabled", "num-workers": "3", "idx": 4}
-          - {"target": "kv-live-migration", "ha": "noHA", "gateway-mode": "local", "ipfamily": "ipv4", "disable-snat-multiple-gws": "SnatGW",   "second-bridge": "1br", "ic": "ic-disabled", "num-workers": "3", "idx": 5}
-          - {"target": "kv-live-migration", "ha": "noHA", "gateway-mode": "local", "ipfamily": "ipv4", "disable-snat-multiple-gws": "SnatGW",   "second-bridge": "1br", "ic": "ic-disabled", "num-workers": "3", "idx": 6}
-          - {"target": "kv-live-migration", "ha": "noHA", "gateway-mode": "local", "ipfamily": "ipv4", "disable-snat-multiple-gws": "SnatGW",   "second-bridge": "1br", "ic": "ic-disabled", "num-workers": "3", "idx": 7}
-          - {"target": "kv-live-migration", "ha": "noHA", "gateway-mode": "local", "ipfamily": "ipv4", "disable-snat-multiple-gws": "SnatGW",   "second-bridge": "1br", "ic": "ic-disabled", "num-workers": "3", "idx": 8}
-          - {"target": "kv-live-migration", "ha": "noHA", "gateway-mode": "local", "ipfamily": "ipv4", "disable-snat-multiple-gws": "SnatGW",   "second-bridge": "1br", "ic": "ic-disabled", "num-workers": "3", "idx": 9}
-          - {"target": "kv-live-migration", "ha": "noHA", "gateway-mode": "local", "ipfamily": "ipv4", "disable-snat-multiple-gws": "SnatGW",   "second-bridge": "1br", "ic": "ic-disabled", "num-workers": "3", "idx": 10}
-          - {"target": "kv-live-migration", "ha": "noHA", "gateway-mode": "local", "ipfamily": "ipv4", "disable-snat-multiple-gws": "SnatGW",   "second-bridge": "1br", "ic": "ic-disabled", "num-workers": "3", "idx": 11}
-          - {"target": "kv-live-migration", "ha": "noHA", "gateway-mode": "local", "ipfamily": "ipv4", "disable-snat-multiple-gws": "SnatGW",   "second-bridge": "1br", "ic": "ic-disabled", "num-workers": "3", "idx": 12}
+          - {"target": "kv-live-migration", "ha": "noHA", "gateway-mode": "shared", "ipfamily": "dualstack", "disable-snat-multiple-gws": "SnatGW",   "second-bridge": "1br", "ic": "ic-single-node-zone", "num-workers": "3", "idx": 1}
+          - {"target": "kv-live-migration", "ha": "noHA", "gateway-mode": "shared", "ipfamily": "dualstack", "disable-snat-multiple-gws": "SnatGW",   "second-bridge": "1br", "ic": "ic-single-node-zone", "num-workers": "3", "idx": 2}
+          - {"target": "kv-live-migration", "ha": "noHA", "gateway-mode": "shared", "ipfamily": "dualstack", "disable-snat-multiple-gws": "SnatGW",   "second-bridge": "1br", "ic": "ic-single-node-zone", "num-workers": "3", "idx": 3}
+          - {"target": "kv-live-migration", "ha": "noHA", "gateway-mode": "shared", "ipfamily": "dualstack", "disable-snat-multiple-gws": "SnatGW",   "second-bridge": "1br", "ic": "ic-single-node-zone", "num-workers": "3", "idx": 4}
+          - {"target": "kv-live-migration", "ha": "noHA", "gateway-mode": "shared", "ipfamily": "dualstack", "disable-snat-multiple-gws": "SnatGW",   "second-bridge": "1br", "ic": "ic-single-node-zone", "num-workers": "3", "idx": 5}
+          - {"target": "kv-live-migration", "ha": "noHA", "gateway-mode": "shared", "ipfamily": "dualstack", "disable-snat-multiple-gws": "SnatGW",   "second-bridge": "1br", "ic": "ic-single-node-zone", "num-workers": "3", "idx": 6}
+          - {"target": "kv-live-migration", "ha": "noHA", "gateway-mode": "shared", "ipfamily": "dualstack", "disable-snat-multiple-gws": "SnatGW",   "second-bridge": "1br", "ic": "ic-single-node-zone", "num-workers": "3", "idx": 7}
+          - {"target": "kv-live-migration", "ha": "noHA", "gateway-mode": "shared", "ipfamily": "dualstack", "disable-snat-multiple-gws": "SnatGW",   "second-bridge": "1br", "ic": "ic-single-node-zone", "num-workers": "3", "idx": 8}
+          - {"target": "kv-live-migration", "ha": "noHA", "gateway-mode": "shared", "ipfamily": "dualstack", "disable-snat-multiple-gws": "SnatGW",   "second-bridge": "1br", "ic": "ic-single-node-zone", "num-workers": "3", "idx": 9}
+          - {"target": "kv-live-migration", "ha": "noHA", "gateway-mode": "shared", "ipfamily": "dualstack", "disable-snat-multiple-gws": "SnatGW",   "second-bridge": "1br", "ic": "ic-single-node-zone", "num-workers": "3", "idx": 10}
+          - {"target": "kv-live-migration", "ha": "noHA", "gateway-mode": "shared", "ipfamily": "dualstack", "disable-snat-multiple-gws": "SnatGW",   "second-bridge": "1br", "ic": "ic-single-node-zone", "num-workers": "3", "idx": 11}
+          - {"target": "kv-live-migration", "ha": "noHA", "gateway-mode": "shared", "ipfamily": "dualstack", "disable-snat-multiple-gws": "SnatGW",   "second-bridge": "1br", "ic": "ic-single-node-zone", "num-workers": "3", "idx": 12}
     needs: [ build-pr ]
     env:
       JOB_NAME: "${{ matrix.idx }}-${{ matrix.target }}-${{ matrix.ha }}-${{ matrix.gateway-mode }}-${{ matrix.ipfamily }}-${{ matrix.disable-snat-multiple-gws }}-${{ matrix.second-bridge }}"
