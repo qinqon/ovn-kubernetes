@@ -381,15 +381,16 @@ passwd:
 				}
 			}
 
-			step = by(vmName, stage+": Check n/s tcp traffic")
-			output := ""
-			Eventually(func() error {
-				output, err = kubevirt.RunCommand(vmi, "curl -kL https://kubernetes.default.svc.cluster.local", polling)
-				return err
-			}).
+			step = by(vmName, stage+": Check name resolution")
+			output, err := kubevirt.RunCommand(vmi, "nslookup kubernetes.default.svc.cluster.local", polling)
+			Expect(err).
 				WithOffset(1).
-				WithPolling(polling).
-				WithTimeout(timeout).
+				Should(Succeed(), func() string { return step + ": " + output })
+
+			step = by(vmName, stage+": Check n/s tcp traffic")
+			output, err = kubevirt.RunCommand(vmi, "curl -kL https://kubernetes.default.svc.cluster.local", polling)
+			Expect(err).
+				WithOffset(1).
 				Should(Succeed(), func() string { return step + ": " + output })
 		}
 
