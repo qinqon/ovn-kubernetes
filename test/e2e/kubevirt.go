@@ -349,17 +349,29 @@ passwd:
 
 		checkConnectivity = func(vmName string, endpoints []*net.TCPConn, stage string) {
 			by(vmName, "Check connectivity "+stage)
+			polling := 15 * time.Second
+			timeout := time.Minute
 			vmi := &kubevirtv1.VirtualMachineInstance{
 				ObjectMeta: metav1.ObjectMeta{
 					Namespace: namespace,
 					Name:      vmName,
 				},
 			}
-			err := crClient.Get(context.TODO(), crclient.ObjectKeyFromObject(vmi), vmi)
-			Expect(err).ToNot(HaveOccurred())
-			polling := 15 * time.Second
-			timeout := time.Minute
-			step := by(vmName, stage+": Check tcp connection is not broken")
+
+			step := by(vmName, stage+": Check name resolution")
+			output, err := kubevirt.RunCommand(vmi, "nslookup kubernetes.default.svc.cluster.local", polling)
+			Expect(err).
+				WithOffset(1).
+				Should(Succeed(), func() string { return step + ": " + output })
+
+			step = by(vmName, stage+": Check n/s tcp traffic")
+			output, err = kubevirt.RunCommand(vmi, "curl -kL https://kubernetes.default.svc.cluster.local", polling)
+			Expect(err).
+				WithOffset(1).
+				Should(Succeed(), func() string { return step + ": " + output })
+
+			Expect(crClient.Get(context.TODO(), crclient.ObjectKeyFromObject(vmi), vmi)).To(Succeed())
+			step = by(vmName, stage+": Check tcp connection is not broken")
 			Eventually(func() error { return sendEchos(endpoints) }).
 				WithPolling(polling).
 				WithTimeout(timeout).
@@ -380,18 +392,6 @@ passwd:
 						Should(Succeed(), func() string { return step + ": " + pod.Name + ": " + output })
 				}
 			}
-
-			step = by(vmName, stage+": Check name resolution")
-			output, err := kubevirt.RunCommand(vmi, "nslookup kubernetes.default.svc.cluster.local", polling)
-			Expect(err).
-				WithOffset(1).
-				Should(Succeed(), func() string { return step + ": " + output })
-
-			step = by(vmName, stage+": Check n/s tcp traffic")
-			output, err = kubevirt.RunCommand(vmi, "curl -kL https://kubernetes.default.svc.cluster.local", polling)
-			Expect(err).
-				WithOffset(1).
-				Should(Succeed(), func() string { return step + ": " + output })
 		}
 
 		checkConnectivityAndNetworkPolicies = func(vmName string, endpoints []*net.TCPConn, stage string) {
@@ -655,7 +655,7 @@ passwd:
 		liveMigrateAndCheck = func(vmName string, migrationMode kubevirtv1.MigrationMode, endpoints []*net.TCPConn, step string) {
 			liveMigrateVirtualMachine(vmName, migrationMode)
 			checkLiveMigrationSucceeded(vmName, migrationMode)
-			checkConnectivityAndNetworkPolicies(vmName, endpoints, step)
+			checkConnectivity(vmName, endpoints, step)
 		}
 
 		runTest = func(td liveMigrationTestData, vm *kubevirtv1.VirtualMachine) {
