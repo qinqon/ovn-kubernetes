@@ -29,6 +29,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/util/retry"
+	e2ekubectl "k8s.io/kubernetes/test/e2e/framework/kubectl"
 	e2epod "k8s.io/kubernetes/test/e2e/framework/pod"
 	utilnet "k8s.io/utils/net"
 	"k8s.io/utils/pointer"
@@ -347,38 +348,55 @@ passwd:
 			return fr.ClientSet.NetworkingV1().NetworkPolicies(namespace).Create(context.TODO(), policy, metav1.CreateOptions{})
 		}
 
-		checkConnectivity = func(vmName string, endpoints []*net.TCPConn, stage string) {
-			by(vmName, "Check connectivity "+stage)
+		checkConnectivity = func(vmi *kubevirtv1.VirtualMachineInstance, endpoints []*net.TCPConn, stage string) {
+			by(vmi.Name, "Dump routes and policies from ovn_cluster_router "+stage)
+			dbPods, err := e2ekubectl.RunKubectl("ovn-kubernetes", "get", "pods", "-l", "name=ovnkube-db", "-o=jsonpath='{.items..metadata.name}'")
+			dbContainerName := "nb-ovsdb"
+			if isInterconnectEnabled() {
+				dbPods, err = e2ekubectl.RunKubectl("ovn-kubernetes", "get", "pods", "-l", "name=ovnkube-node", "--field-selector", fmt.Sprintf("spec.nodeName=%s", vmi.Status.NodeName), "-o=jsonpath='{.items..metadata.name}'")
+			}
+			Expect(err).ToNot(HaveOccurred())
+			Expect(dbPods).ToNot(BeEmpty())
+
+			dbPod := strings.Split(dbPods, " ")[0]
+			dbPod = strings.TrimPrefix(dbPod, "'")
+			dbPod = strings.TrimSuffix(dbPod, "'")
+			Expect(dbPod).ToNot(BeEmpty())
+
+			routes, err := e2ekubectl.RunKubectl("ovn-kubernetes", "exec", dbPod, "-c", dbContainerName, "--", "ovn-nbctl", "lr-route-list", "ovn_cluster_router")
+			Expect(err).ToNot(HaveOccurred())
+
+			policies, err := e2ekubectl.RunKubectl("ovn-kubernetes", "exec", dbPod, "-c", dbContainerName, "--", "ovn-nbctl", "lr-policy-list", "ovn_cluster_router")
+			Expect(err).ToNot(HaveOccurred())
+
+			GinkgoWriter.Write([]byte(routes))
+			GinkgoWriter.Write([]byte(policies))
+
+			by(vmi.Name, "Check connectivity "+stage)
 			polling := 15 * time.Second
 			timeout := time.Minute
-			vmi := &kubevirtv1.VirtualMachineInstance{
-				ObjectMeta: metav1.ObjectMeta{
-					Namespace: namespace,
-					Name:      vmName,
-				},
-			}
 
-			step := by(vmName, stage+": Check name resolution")
+			step := by(vmi.Name, stage+": Check name resolution")
 			output, err := kubevirt.RunCommand(vmi, "nslookup kubernetes.default.svc.cluster.local", polling)
 			Expect(err).
 				WithOffset(1).
 				Should(Succeed(), func() string { return step + ": " + output })
 
-			step = by(vmName, stage+": Check n/s tcp traffic")
+			step = by(vmi.Name, stage+": Check n/s tcp traffic")
 			output, err = kubevirt.RunCommand(vmi, "curl -kL https://kubernetes.default.svc.cluster.local", polling)
 			Expect(err).
 				WithOffset(1).
 				Should(Succeed(), func() string { return step + ": " + output })
 
 			Expect(crClient.Get(context.TODO(), crclient.ObjectKeyFromObject(vmi), vmi)).To(Succeed())
-			step = by(vmName, stage+": Check tcp connection is not broken")
+			step = by(vmi.Name, stage+": Check tcp connection is not broken")
 			Eventually(func() error { return sendEchos(endpoints) }).
 				WithPolling(polling).
 				WithTimeout(timeout).
 				WithOffset(1).
 				Should(Succeed(), step)
 
-			step = by(vmName, stage+": Check e/w tcp traffic")
+			step = by(vmi.Name, stage+": Check e/w tcp traffic")
 			for _, pod := range httpServerTestPods {
 				for _, podIP := range pod.Status.PodIPs {
 					output := ""
@@ -394,13 +412,13 @@ passwd:
 			}
 		}
 
-		checkConnectivityAndNetworkPolicies = func(vmName string, endpoints []*net.TCPConn, stage string) {
-			checkConnectivity(vmName, endpoints, stage)
-			step := by(vmName, stage+": Create deny all network policy")
-			policy, err := createDenyAllPolicy(vmName)
+		checkConnectivityAndNetworkPolicies = func(vmi *kubevirtv1.VirtualMachineInstance, endpoints []*net.TCPConn, stage string) {
+			checkConnectivity(vmi, endpoints, stage)
+			step := by(vmi.Name, stage+": Create deny all network policy")
+			policy, err := createDenyAllPolicy(vmi.Name)
 			Expect(err).ToNot(HaveOccurred(), step)
 
-			step = by(vmName, stage+": Check connectivity block after create deny all network policy")
+			step = by(vmi.Name, stage+": Check connectivity block after create deny all network policy")
 			Eventually(func() error { return sendEchos(endpoints) }).
 				WithPolling(time.Second).
 				WithTimeout(5*time.Second).
@@ -413,7 +431,7 @@ passwd:
 			// after deleting the deny all policy to ensure a healthy tcp connection
 			Expect(reconnect(endpoints)).To(Succeed(), step)
 
-			step = by(vmName, stage+": Check connectivity is restored after delete deny all network policy")
+			step = by(vmi.Name, stage+": Check connectivity is restored after delete deny all network policy")
 			Expect(sendEchos(endpoints)).To(Succeed(), step)
 		}
 
@@ -652,10 +670,10 @@ passwd:
 			}
 			return vms, nil
 		}
-		liveMigrateAndCheck = func(vmName string, migrationMode kubevirtv1.MigrationMode, endpoints []*net.TCPConn, step string) {
-			liveMigrateVirtualMachine(vmName, migrationMode)
-			checkLiveMigrationSucceeded(vmName, migrationMode)
-			checkConnectivity(vmName, endpoints, step)
+		liveMigrateAndCheck = func(vmi *kubevirtv1.VirtualMachineInstance, migrationMode kubevirtv1.MigrationMode, endpoints []*net.TCPConn, step string) {
+			liveMigrateVirtualMachine(vmi.Name, migrationMode)
+			checkLiveMigrationSucceeded(vmi.Name, migrationMode)
+			checkConnectivity(vmi, endpoints, step)
 		}
 
 		runTest = func(td liveMigrationTestData, vm *kubevirtv1.VirtualMachine) {
@@ -715,23 +733,23 @@ passwd:
 			endpoints, err := dialServiceNodePort(svc)
 			Expect(err).ToNot(HaveOccurred(), step)
 
-			checkConnectivityAndNetworkPolicies(vm.Name, endpoints, "before live migration")
+			checkConnectivityAndNetworkPolicies(vmi, endpoints, "before live migration")
 			// Do just one migration that will fail
 			if td.shouldExpectFailure {
 				by(vm.Name, fmt.Sprintf("Live migrate virtual machine to check failed migration"))
 				liveMigrateVirtualMachine(vm.Name, td.mode)
 				checkLiveMigrationFailed(vm.Name)
-				checkConnectivityAndNetworkPolicies(vm.Name, endpoints, "after live migrate to check failed migration")
+				checkConnectivityAndNetworkPolicies(vmi, endpoints, "after live migrate to check failed migration")
 			} else {
 				originalNode := vmi.Status.NodeName
 				by(vm.Name, fmt.Sprintf("Live migrate for the first time"))
-				liveMigrateAndCheck(vm.Name, td.mode, endpoints, "after live migrate for the first time")
+				liveMigrateAndCheck(vmi, td.mode, endpoints, "after live migrate for the first time")
 
 				by(vm.Name, fmt.Sprintf("Live migrate for the second time to a node not owning the subnet"))
 				// Remove the node selector label from original node to force
 				// live migration to a different one.
 				Expect(unlabelNode(originalNode, namespace)).To(Succeed())
-				liveMigrateAndCheck(vm.Name, td.mode, endpoints, "after live migration for the second time to node not owning subnet")
+				liveMigrateAndCheck(vmi, td.mode, endpoints, "after live migration for the second time to node not owning subnet")
 
 				by(vm.Name, fmt.Sprintf("Live migrate for the third time to the node owning the subnet"))
 				// Patch back the original node with the label and remove it
@@ -742,7 +760,7 @@ passwd:
 						Expect(unlabelNode(selectedNode.Name, namespace)).To(Succeed())
 					}
 				}
-				liveMigrateAndCheck(vm.Name, td.mode, endpoints, "after live migration to node owning the subnet")
+				liveMigrateAndCheck(vmi, td.mode, endpoints, "after live migration to node owning the subnet")
 			}
 
 		}
