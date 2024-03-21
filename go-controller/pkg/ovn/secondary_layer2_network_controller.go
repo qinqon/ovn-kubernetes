@@ -114,9 +114,15 @@ func (oc *SecondaryLayer2NetworkController) Cleanup(netName string) error {
 }
 
 func (oc *SecondaryLayer2NetworkController) Init() error {
+	var err error
+	oc.defaultCOPPUUID, err = EnsureDefaultCOPP(oc.nbClient)
+	if err != nil {
+		return err
+	}
+
 	switchName := oc.GetNetworkScopedName(types.OVNLayer2Switch)
 
-	_, err := oc.initializeLogicalSwitch(switchName, oc.Subnets(), oc.ExcludeSubnets())
+	_, err = oc.initializeLogicalSwitch(switchName, oc.Subnets(), oc.ExcludeSubnets())
 	return err
 }
 

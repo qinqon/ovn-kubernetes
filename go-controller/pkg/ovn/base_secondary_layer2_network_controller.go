@@ -353,6 +353,21 @@ func (oc *BaseSecondaryLayer2NetworkController) addUpdateNodeEvent(node *corev1.
 func (oc *BaseSecondaryLayer2NetworkController) addUpdateLocalNodeEvent(node *corev1.Node) error {
 	_, present := oc.localZoneNodes.LoadOrStore(node.Name, true)
 
+	switchName := oc.GetNetworkScopedName(types.OVNLayer2Switch)
+	subnets := []*net.IPNet{}
+	for _, subnet := range oc.Subnets() {
+		subnets = append(subnets, subnet.CIDR)
+	}
+
+	gateways := []*net.IPNet{}
+	for _, subnet := range oc.Subnets() {
+		gateways = append(gateways, util.GetNodeGatewayIfAddr(subnet.CIDR))
+	}
+
+	if err := oc.syncNodeGateway(node, gateways, gateways, subnets, subnets, switchName); err != nil {
+		return fmt.Errorf("failed syncing node gateway for layer2 network %s: %w", oc.GetNetworkName(), err)
+	}
+
 	if !present {
 		// process all pods so they are reconfigured as local
 		errs := oc.addAllPodsOnNode(node.Name)

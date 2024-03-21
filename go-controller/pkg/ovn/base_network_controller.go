@@ -160,6 +160,21 @@ type BaseNetworkController struct {
 	// might have been already be released on startup
 	releasedPodsBeforeStartup  map[string]sets.Set[string]
 	releasedPodsOnStartupMutex sync.Mutex
+
+	// Cluster-wide router default Control Plane Protection (COPP) UUID
+	defaultCOPPUUID string
+
+	// Cluster wide Load_Balancer_Group UUID.
+	// Includes all node switches and node gateway routers.
+	clusterLoadBalancerGroupUUID string
+
+	// Cluster wide router Load_Balancer_Group UUID.
+	// Includes all node gateway routers.
+	routerLoadBalancerGroupUUID string
+
+	// IP addresses of OVN Cluster logical router port ("GwRouterToJoinSwitchPrefix + OVNClusterRouter")
+	// connecting to the join switch
+	ovnClusterLRPToJoinIfAddrs []*net.IPNet
 }
 
 // BaseSecondaryNetworkController structure holds per-network fields and network specific
@@ -737,4 +752,94 @@ func (bnc *BaseNetworkController) findMigratablePodIPsForSubnets(subnets []*net.
 		}
 	}
 	return ipList, nil
+}
+
+func (oc *BaseNetworkController) syncGatewayLogicalNetwork(node *kapi.Node, l3GatewayConfig *util.L3GatewayConfig,
+	gwLRPIPs, drLRPIfAddrs, clusterSubnets, hostSubnets []*net.IPNet, hostAddrs []string, joinSwitchName string) error {
+	var err error
+	enableGatewayMTU := util.ParseNodeGatewayMTUSupport(node)
+
+	err = oc.gatewayInit(node.Name, clusterSubnets, hostSubnets, l3GatewayConfig, oc.SCTPSupport, gwLRPIPs, drLRPIfAddrs,
+		enableGatewayMTU, joinSwitchName)
+	if err != nil {
+		return fmt.Errorf("failed to init shared interface gateway: %v", err)
+	}
+
+	for _, subnet := range hostSubnets {
+		hostIfAddr := util.GetNodeManagementIfAddr(subnet)
+		l3GatewayConfigIP, err := util.MatchFirstIPNetFamily(utilnet.IsIPv6(hostIfAddr.IP), l3GatewayConfig.IPAddresses)
+		if err != nil {
+			return err
+		}
+		relevantHostIPs, err := util.MatchAllIPStringFamily(utilnet.IsIPv6(hostIfAddr.IP), hostAddrs)
+		if err != nil && err != util.ErrorNoIP {
+			return err
+		}
+		if err := oc.addPolicyBasedRoutes(node.Name, hostIfAddr.IP.String(), l3GatewayConfigIP, relevantHostIPs); err != nil {
+			return err
+		}
+	}
+
+	return err
+}
+
+// syncNodeGateway ensures a node's gateway router is configured
+func (oc *BaseNetworkController) syncNodeGateway(node *kapi.Node, gwLRPIPs, drLRPIfAddrs, clusterSubnets, hostSubnets []*net.IPNet, joinSwitchName string) error {
+	l3GatewayConfig, err := util.ParseNodeL3GatewayAnnotation(node)
+	if err != nil {
+		return err
+	}
+
+	if hostSubnets == nil {
+		hostSubnets, err = util.ParseNodeHostSubnetAnnotation(node, oc.GetNetworkName())
+		if err != nil {
+			return err
+		}
+	}
+
+	if l3GatewayConfig.Mode == config.GatewayModeDisabled {
+		if err := oc.gatewayCleanup(node.Name, joinSwitchName); err != nil {
+			return fmt.Errorf("error cleaning up gateway for node %s: %v", node.Name, err)
+		}
+	} else if hostSubnets != nil {
+		var hostAddrs []string
+		if config.Gateway.Mode == config.GatewayModeShared {
+			hostAddrs, err = util.GetNodeHostAddrs(node)
+			if err != nil && !util.IsAnnotationNotSetError(err) {
+				return fmt.Errorf("failed to get host CIDRs for node: %s: %v", node.Name, err)
+			}
+		}
+		if err := oc.syncGatewayLogicalNetwork(node, l3GatewayConfig, gwLRPIPs, drLRPIfAddrs, clusterSubnets, hostSubnets, hostAddrs, joinSwitchName); err != nil {
+			return fmt.Errorf("error creating gateway for node %s: %v", node.Name, err)
+		}
+	}
+	return nil
+}
+
+// getOVNClusterRouterPortToJoinSwitchIPs returns the IP addresses for the
+// logical router port "GwRouterToJoinSwitchPrefix + OVNClusterRouter" from the
+// config.Gateway.V4JoinSubnet and  config.Gateway.V6JoinSubnet. This will
+// always be the first IP from these subnets.
+func (oc *BaseNetworkController) getOVNClusterRouterPortToJoinSwitchIfAddrs() (gwLRPIPs []*net.IPNet, err error) {
+	joinSubnetsConfig := []string{}
+	if config.IPv4Mode {
+		joinSubnetsConfig = append(joinSubnetsConfig, config.Gateway.V4JoinSubnet)
+	}
+	if config.IPv6Mode {
+		joinSubnetsConfig = append(joinSubnetsConfig, config.Gateway.V6JoinSubnet)
+	}
+	for _, joinSubnetString := range joinSubnetsConfig {
+		_, joinSubnet, err := net.ParseCIDR(joinSubnetString)
+		if err != nil {
+			return nil, fmt.Errorf("error parsing join subnet string %s: %v", joinSubnetString, err)
+		}
+		joinSubnetBaseIP := utilnet.BigForIP(joinSubnet.IP)
+		ipnet := &net.IPNet{
+			IP:   utilnet.AddIPOffset(joinSubnetBaseIP, 1),
+			Mask: joinSubnet.Mask,
+		}
+		gwLRPIPs = append(gwLRPIPs, ipnet)
+	}
+
+	return gwLRPIPs, nil
 }
