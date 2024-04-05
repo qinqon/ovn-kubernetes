@@ -671,7 +671,9 @@ func (oc *DefaultNetworkController) addUpdateLocalNodeEvent(node *kapi.Node, nSy
 			return fmt.Errorf("failed to get join switch port IP address for node %s: %v", node.Name, err)
 		}
 
-		err = oc.syncNodeGateway(node, gwLRPIPs, oc.ovnClusterLRPToJoinIfAddrs, clusterSubnets, nil, types.OVNJoinSwitch)
+		gwLRPMAC := util.IPAddrToHWAddr(gwLRPIPs[0].IP)
+
+		err = oc.syncNodeGateway(node, gwLRPMAC.String(), gwLRPIPs, oc.ovnClusterLRPToJoinIfAddrs, clusterSubnets, nil, types.OVNJoinSwitch)
 		if err != nil {
 			errs = append(errs, err)
 			oc.gatewaysFailed.Store(node.Name, true)

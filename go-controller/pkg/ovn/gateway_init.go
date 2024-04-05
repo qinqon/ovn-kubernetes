@@ -112,7 +112,7 @@ func (oc *BaseNetworkController) cleanupStalePodSNATs(nodeName string, nodeIPs [
 // gatewayInit creates a gateway router for the local chassis.
 // enableGatewayMTU enables options:gateway_mtu for gateway routers.
 func (oc *BaseNetworkController) gatewayInit(nodeName string, clusterIPSubnet []*net.IPNet, hostSubnets []*net.IPNet,
-	l3GatewayConfig *util.L3GatewayConfig, sctpSupport bool, gwLRPIfAddrs, drLRPIfAddrs []*net.IPNet,
+	l3GatewayConfig *util.L3GatewayConfig, sctpSupport bool, gwLRPMAC string, gwLRPIfAddrs, drLRPIfAddrs []*net.IPNet,
 	enableGatewayMTU bool, joinSwitchName string) error {
 
 	gwLRPIPs := make([]net.IP, 0)
@@ -198,7 +198,6 @@ func (oc *BaseNetworkController) gatewayInit(nodeName string, clusterIPSubnet []
 		return fmt.Errorf("failed to create port %v on logical switch %q: %v", gwSwitchPort, types.OVNJoinSwitch, err)
 	}
 
-	gwLRPMAC := util.IPAddrToHWAddr(gwLRPIPs[0])
 	gwLRPNetworks := []string{}
 	for _, gwLRPIfAddr := range gwLRPIfAddrs {
 		gwLRPNetworks = append(gwLRPNetworks, gwLRPIfAddr.String())
@@ -212,7 +211,7 @@ func (oc *BaseNetworkController) gatewayInit(nodeName string, clusterIPSubnet []
 	}
 	logicalRouterPort := nbdb.LogicalRouterPort{
 		Name:     gwRouterPort,
-		MAC:      gwLRPMAC.String(),
+		MAC:      gwLRPMAC,
 		Networks: gwLRPNetworks,
 		Options:  options,
 	}

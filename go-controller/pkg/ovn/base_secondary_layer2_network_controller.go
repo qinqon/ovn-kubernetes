@@ -247,6 +247,12 @@ func (oc *BaseSecondaryLayer2NetworkController) stop() {
 // cleanup cleans up logical entities for the given network, called from net-attach-def routine
 // could be called from a dummy Controller (only has CommonNetworkControllerInfo set)
 func (oc *BaseSecondaryLayer2NetworkController) cleanup(topotype, netName string) error {
+	if oc.isLayer2Interconnect() {
+		err := oc.zoneICHandler.Cleanup()
+		if err != nil {
+			return err
+		}
+	}
 	// delete layer 2 logical switches
 	ops, err := libovsdbops.DeleteLogicalSwitchesWithPredicateOps(oc.nbClient, nil,
 		func(item *nbdb.LogicalSwitch) bool {
@@ -351,7 +357,6 @@ func (oc *BaseSecondaryLayer2NetworkController) addUpdateNodeEvent(node *corev1.
 }
 
 func (oc *BaseSecondaryLayer2NetworkController) addUpdateLocalNodeEvent(node *corev1.Node) error {
-	_, present := oc.localZoneNodes.LoadOrStore(node.Name, true)
 
 	switchName := oc.GetNetworkScopedName(types.OVNLayer2Switch)
 	subnets := []*net.IPNet{}
@@ -364,10 +369,25 @@ func (oc *BaseSecondaryLayer2NetworkController) addUpdateLocalNodeEvent(node *co
 		gateways = append(gateways, util.GetNodeGatewayIfAddr(subnet.CIDR))
 	}
 
-	if err := oc.syncNodeGateway(node, gateways, gateways, subnets, subnets, switchName); err != nil {
+	gwLRPIPs, err := util.ParseNodeGatewayRouterLRPAddrs(node)
+	if err != nil {
+		return fmt.Errorf("failed to get join switch port IP address for node %s: %v", node.Name, err)
+	}
+
+	gwLRPMAC := util.IPAddrToHWAddr(gwLRPIPs[0].IP)
+
+	if err := oc.syncNodeGateway(node, gwLRPMAC.String(), gateways, gateways, subnets, subnets, switchName); err != nil {
 		return fmt.Errorf("failed syncing node gateway for layer2 network %s: %w", oc.GetNetworkName(), err)
 	}
 
+	if oc.isLayer2Interconnect() {
+		err := oc.zoneICHandler.AddLocalZoneNode(node)
+		if err != nil {
+			return err
+		}
+	}
+
+	_, present := oc.localZoneNodes.LoadOrStore(node.Name, true)
 	if !present {
 		// process all pods so they are reconfigured as local
 		errs := oc.addAllPodsOnNode(node.Name)
@@ -381,6 +401,14 @@ func (oc *BaseSecondaryLayer2NetworkController) addUpdateLocalNodeEvent(node *co
 }
 
 func (oc *BaseSecondaryLayer2NetworkController) addUpdateRemoteNodeEvent(node *corev1.Node) error {
+
+	if oc.isLayer2Interconnect() {
+		err := oc.zoneICHandler.AddRemoteZoneNode(node)
+		if err != nil {
+			return err
+		}
+	}
+
 	_, present := oc.localZoneNodes.Load(node.Name)
 
 	if present {
@@ -401,6 +429,12 @@ func (oc *BaseSecondaryLayer2NetworkController) addUpdateRemoteNodeEvent(node *c
 }
 
 func (oc *BaseSecondaryLayer2NetworkController) deleteNodeEvent(node *corev1.Node) error {
+	if oc.isLayer2Interconnect() {
+		err := oc.zoneICHandler.DeleteNode(node)
+		if err != nil {
+			return err
+		}
+	}
 	oc.localZoneNodes.Delete(node.Name)
 	return nil
 }

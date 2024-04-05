@@ -755,11 +755,11 @@ func (bnc *BaseNetworkController) findMigratablePodIPsForSubnets(subnets []*net.
 }
 
 func (oc *BaseNetworkController) syncGatewayLogicalNetwork(node *kapi.Node, l3GatewayConfig *util.L3GatewayConfig,
-	gwLRPIPs, drLRPIfAddrs, clusterSubnets, hostSubnets []*net.IPNet, hostAddrs []string, joinSwitchName string) error {
+	gwLRPMAC string, gwLRPIPs, drLRPIfAddrs, clusterSubnets, hostSubnets []*net.IPNet, hostAddrs []string, joinSwitchName string) error {
 	var err error
 	enableGatewayMTU := util.ParseNodeGatewayMTUSupport(node)
 
-	err = oc.gatewayInit(node.Name, clusterSubnets, hostSubnets, l3GatewayConfig, oc.SCTPSupport, gwLRPIPs, drLRPIfAddrs,
+	err = oc.gatewayInit(node.Name, clusterSubnets, hostSubnets, l3GatewayConfig, oc.SCTPSupport, gwLRPMAC, gwLRPIPs, drLRPIfAddrs,
 		enableGatewayMTU, joinSwitchName)
 	if err != nil {
 		return fmt.Errorf("failed to init shared interface gateway: %v", err)
@@ -784,7 +784,7 @@ func (oc *BaseNetworkController) syncGatewayLogicalNetwork(node *kapi.Node, l3Ga
 }
 
 // syncNodeGateway ensures a node's gateway router is configured
-func (oc *BaseNetworkController) syncNodeGateway(node *kapi.Node, gwLRPIPs, drLRPIfAddrs, clusterSubnets, hostSubnets []*net.IPNet, joinSwitchName string) error {
+func (oc *BaseNetworkController) syncNodeGateway(node *kapi.Node, gwLRPMAC string, gwLRPIPs, drLRPIfAddrs, clusterSubnets, hostSubnets []*net.IPNet, joinSwitchName string) error {
 	l3GatewayConfig, err := util.ParseNodeL3GatewayAnnotation(node)
 	if err != nil {
 		return err
@@ -809,7 +809,7 @@ func (oc *BaseNetworkController) syncNodeGateway(node *kapi.Node, gwLRPIPs, drLR
 				return fmt.Errorf("failed to get host CIDRs for node: %s: %v", node.Name, err)
 			}
 		}
-		if err := oc.syncGatewayLogicalNetwork(node, l3GatewayConfig, gwLRPIPs, drLRPIfAddrs, clusterSubnets, hostSubnets, hostAddrs, joinSwitchName); err != nil {
+		if err := oc.syncGatewayLogicalNetwork(node, l3GatewayConfig, gwLRPMAC, gwLRPIPs, drLRPIfAddrs, clusterSubnets, hostSubnets, hostAddrs, joinSwitchName); err != nil {
 			return fmt.Errorf("error creating gateway for node %s: %v", node.Name, err)
 		}
 	}
