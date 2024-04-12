@@ -790,6 +790,17 @@ func (oc *BaseNetworkController) syncNodeGateway(node *kapi.Node, gwLRPMAC strin
 		return err
 	}
 
+	// DELETEME: POC for secondary networks, the mac and IP has to be different
+	// per patch port so we have to make it different from default network
+	if joinSwitchName != types.OVNJoinSwitch {
+		harcodedICNodeIp := "172.20.0.1"
+		l3GatewayConfig.IPAddresses, err = util.ParseIPNets([]string{harcodedICNodeIp + "/16"})
+		if err != nil {
+			return err
+		}
+		l3GatewayConfig.MACAddress = util.IPAddrToHWAddr(net.ParseIP(harcodedICNodeIp))
+	}
+
 	if hostSubnets == nil {
 		hostSubnets, err = util.ParseNodeHostSubnetAnnotation(node, oc.GetNetworkName())
 		if err != nil {
