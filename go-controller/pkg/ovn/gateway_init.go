@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -20,7 +21,7 @@ import (
 	libovsdbops "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdb/ops"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/metrics"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/nbdb"
-	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/node"
+	ovnnode "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/node"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/gateway"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
@@ -111,7 +112,7 @@ func (oc *BaseNetworkController) cleanupStalePodSNATs(nodeName string, nodeIPs [
 
 // gatewayInit creates a gateway router for the local chassis.
 // enableGatewayMTU enables options:gateway_mtu for gateway routers.
-func (oc *BaseNetworkController) gatewayInit(nodeName string, clusterIPSubnet []*net.IPNet, hostSubnets []*net.IPNet,
+func (oc *BaseNetworkController) gatewayInit(node *corev1.Node, clusterIPSubnet []*net.IPNet, hostSubnets []*net.IPNet,
 	l3GatewayConfig *util.L3GatewayConfig, sctpSupport bool, gwLRPMAC string, gwLRPIfAddrs, drLRPIfAddrs []*net.IPNet,
 	enableGatewayMTU bool, joinSwitchName string) error {
 
@@ -121,7 +122,7 @@ func (oc *BaseNetworkController) gatewayInit(nodeName string, clusterIPSubnet []
 	}
 
 	// Create a gateway router.
-	gatewayRouter := types.GWRouterPrefix + oc.GetNetworkScopedName(nodeName)
+	gatewayRouter := types.GWRouterPrefix + oc.GetNetworkScopedName(node.Name)
 	physicalIPs := make([]string, len(l3GatewayConfig.IPAddresses))
 	for i, ip := range l3GatewayConfig.IPAddresses {
 		physicalIPs[i] = ip.IP.String()
@@ -261,7 +262,7 @@ func (oc *BaseNetworkController) gatewayInit(nodeName string, clusterIPSubnet []
 
 	if err := oc.addExternalSwitch("",
 		l3GatewayConfig.InterfaceID,
-		nodeName,
+		node.Name,
 		gatewayRouter,
 		l3GatewayConfig.MACAddress.String(),
 		types.PhysicalNetworkName,
@@ -273,7 +274,7 @@ func (oc *BaseNetworkController) gatewayInit(nodeName string, clusterIPSubnet []
 	if l3GatewayConfig.EgressGWInterfaceID != "" {
 		if err := oc.addExternalSwitch(types.EgressGWSwitchPrefix,
 			l3GatewayConfig.EgressGWInterfaceID,
-			nodeName,
+			node.Name,
 			gatewayRouter,
 			l3GatewayConfig.EgressGWMACAddress.String(),
 			types.PhysicalNetworkExGwName,
@@ -287,11 +288,11 @@ func (oc *BaseNetworkController) gatewayInit(nodeName string, clusterIPSubnet []
 
 	nextHops := l3GatewayConfig.NextHops
 
-	if err := gateway.CreateDummyGWMacBindings(oc.nbClient, nodeName); err != nil {
+	if err := gateway.CreateDummyGWMacBindings(oc.nbClient, node.Name); err != nil {
 		return err
 	}
 
-	for _, nextHop := range node.DummyNextHopIPs() {
+	for _, nextHop := range ovnnode.DummyNextHopIPs() {
 		// Add return service route for OVN back to host
 		prefix := config.Gateway.V4MasqueradeSubnet
 		if utilnet.IsIPv6(nextHop) {
@@ -416,13 +417,24 @@ func (oc *BaseNetworkController) gatewayInit(nodeName string, clusterIPSubnet []
 	for i, ip := range l3GatewayConfig.IPAddresses {
 		externalIPs[i] = ip.IP
 	}
+	// DELETEME: For the poc do snat using node's IP
+	if joinSwitchName != types.OVNJoinSwitch {
+		l3GatewayConfig, err := util.ParseNodeL3GatewayAnnotation(node)
+		if err != nil {
+			return err
+		}
+		externalIPs = make([]net.IP, len(l3GatewayConfig.IPAddresses))
+		for i, ip := range l3GatewayConfig.IPAddresses {
+			externalIPs[i] = ip.IP
+		}
+	}
 	var natsToUpdate []*nbdb.NAT
 	// If l3gatewayAnnotation.IPAddresses changed, we need to update the SNATs on the GR
 	oldNATs := []*nbdb.NAT{}
 	if oldLogicalRouter != nil {
 		oldNATs, err = libovsdbops.GetRouterNATs(oc.nbClient, oldLogicalRouter)
 		if err != nil && errors.Is(err, libovsdbclient.ErrNotFound) {
-			return fmt.Errorf("unable to get NAT entries for router on node %s: %w", nodeName, err)
+			return fmt.Errorf("unable to get NAT entries for router on node %s: %w", node.Name, err)
 		}
 	}
 
@@ -529,8 +541,8 @@ func (oc *BaseNetworkController) gatewayInit(nodeName string, clusterIPSubnet []
 		}
 	}
 
-	if err := oc.cleanupStalePodSNATs(nodeName, l3GatewayConfig.IPAddresses); err != nil {
-		return fmt.Errorf("failed to sync stale SNATs on node %s: %v", nodeName, err)
+	if err := oc.cleanupStalePodSNATs(node.Name, l3GatewayConfig.IPAddresses); err != nil {
+		return fmt.Errorf("failed to sync stale SNATs on node %s: %v", node.Name, err)
 	}
 
 	// recording gateway mode metrics here after gateway setup is done

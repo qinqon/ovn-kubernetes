@@ -216,12 +216,12 @@ function add-flows() {
  local default_lrp_mac=$(lrp-mac $node_name rtoe-GR_$node_name)
  local network_subnets=$(network-subnets $network)
 
- ovs-ofctl $node_name add-flow $bridge "cookie=$cookie,priority=105,pkt_mark=0x3f0,ip,in_port=$ofport,dl_src=$lrp_mac,actions=ct(commit,zone=64000,nat(src=$node_address),exec(set_field:$ct_mark->ct_mark)),mod_dl_src=$default_lrp_mac,output:1"
- ovs-ofctl $node_name add-flow $bridge "cookie=$cookie,priority=100,ip,in_port=$ofport,dl_src=$lrp_mac,actions=ct(commit,zone=64000,nat(src=$node_address),exec(set_field:$ct_mark->ct_mark)),mod_dl_src=$default_lrp_mac,output:1"
- ovs-ofctl $node_name add-flow $bridge "cookie=$cookie,priority=109,ip,in_port=$ofport,dl_src=$lrp_mac,ip_src=$network_subnets,actions=ct(commit,zone=64000,nat(src=$node_address),exec(set_field:$ct_mark->ct_mark)),mod_dl_src=$default_lrp_mac,output:1"
+ ovs-ofctl $node_name add-flow $bridge "cookie=$cookie,priority=105,pkt_mark=0x3f0,ip,in_port=$ofport,dl_src=$lrp_mac,actions=ct(commit,zone=64000,exec(set_field:$ct_mark->ct_mark)),mod_dl_src=$default_lrp_mac,output:1"
+ ovs-ofctl $node_name add-flow $bridge "cookie=$cookie,priority=100,ip,in_port=$ofport,dl_src=$lrp_mac,actions=ct(commit,zone=64000,exec(set_field:$ct_mark->ct_mark)),mod_dl_src=$default_lrp_mac,output:1"
+ ovs-ofctl $node_name add-flow $bridge "cookie=$cookie,priority=109,ip,in_port=$ofport,dl_src=$lrp_mac,ip_src=$network_subnets,actions=ct(commit,zone=64000,exec(set_field:$ct_mark->ct_mark)),mod_dl_src=$default_lrp_mac,output:1"
 
- ovs-ofctl $node_name add-flow $bridge "cookie=$cookie,table=1,priority=100,ct_state=+est+trk,ct_mark=$ct_mark,ip,actions=ct(zone=64000,nat),mod_dl_dst=$lrp_mac,output:$ofport"
- ovs-ofctl $node_name add-flow $bridge "cookie=$cookie,table=1,priority=100,ct_state=+rel+trk,ct_mark=$ct_mark,ip,actions=ct(zone=64000,nat),mod_dl_dst=$lrp_mac,output:$ofport"
+ ovs-ofctl $node_name add-flow $bridge "cookie=$cookie,table=1,priority=100,ct_state=+est+trk,ct_mark=$ct_mark,ip,actions=mod_dl_dst=$lrp_mac,output:$ofport"
+ ovs-ofctl $node_name add-flow $bridge "cookie=$cookie,table=1,priority=100,ct_state=+rel+trk,ct_mark=$ct_mark,ip,actions=mod_dl_dst=$lrp_mac,output:$ofport"
 
  ovs-ofctl $node_name add-flow $bridge "cookie=$cookie,priority=10,in_port=$ofport,dl_src=$lrp_mac,actions=NORMAL"
  ovs-ofctl $node_name add-flow $bridge "cookie=$cookie,priority=9,in_port=$ofport,actions=drop"
