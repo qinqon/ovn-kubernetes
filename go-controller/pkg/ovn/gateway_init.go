@@ -417,17 +417,7 @@ func (oc *BaseNetworkController) gatewayInit(node *corev1.Node, clusterIPSubnet 
 	for i, ip := range l3GatewayConfig.IPAddresses {
 		externalIPs[i] = ip.IP
 	}
-	// DELETEME: For the poc do snat using node's IP
-	if joinSwitchName != types.OVNJoinSwitch {
-		l3GatewayConfig, err := util.ParseNodeL3GatewayAnnotation(node)
-		if err != nil {
-			return err
-		}
-		externalIPs = make([]net.IP, len(l3GatewayConfig.IPAddresses))
-		for i, ip := range l3GatewayConfig.IPAddresses {
-			externalIPs[i] = ip.IP
-		}
-	}
+
 	var natsToUpdate []*nbdb.NAT
 	// If l3gatewayAnnotation.IPAddresses changed, we need to update the SNATs on the GR
 	oldNATs := []*nbdb.NAT{}
