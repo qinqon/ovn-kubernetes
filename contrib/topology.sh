@@ -1,4 +1,4 @@
-#!/bin/bash -e
+#!/bin/bash -ex
 namespace=default
 vmi1_name=vmi-fedora-l2-network-1
 vmi2_name=vmi-fedora-l2-network-2
@@ -8,6 +8,9 @@ logical_net_internal_cidr="10.100.210.0/24"
 
 logical_router_addr="10.100.200.1"
 logical_router_mac="00:00:00:00:ff:01"
+
+ovnk_namespace=${ovnk_namespace:-ovn-kubernetes}
+ovnk_node_label=${ovnk_node_label:-name=ovnkube-node}
 
 declare -A logical_router_join_addrs=([l2-network-1]=10.100.210.1 [l2-network-2]=10.100.210.2)
 declare -A logical_router_join_macs=([l2-network-1]=00:00:00:00:ff:02 [l2-network-2]=00:00:00:00:ff:03)
@@ -56,8 +59,8 @@ function vmi-node() {
 function ovnkube-controller() {
     local node_name=$1
     shift
-    local pod=$(kubectl get pod -n ovn-kubernetes --field-selector=spec.nodeName=$node_name -l name=ovnkube-node -o name)
-    kubectl exec -c ovnkube-controller -n ovn-kubernetes $pod -- $@
+    local pod=$(kubectl get pod -n $ovnk_namespace --field-selector=spec.nodeName=$node_name -l $ovnk_node_label -o name)
+    kubectl exec -c ovnkube-controller -n $ovnk_namespace $pod -- $@
 }
 function nbctl() {
     local node_name=$1
@@ -129,8 +132,8 @@ function trace() {
     local src_ip=$4
     local dst_mac=$5
     local dst_ip=$6
-    local pod=$(kubectl get pod -n ovn-kubernetes --field-selector=spec.nodeName=$node_name -l name=ovnkube-node -o name)
-    kubectl exec -c ovnkube-controller -n ovn-kubernetes $pod -- ovn-trace --no-leader-only --db unix:/var/run/ovn/ovnsb_db.sock  "inport == \"$inport\" && eth.src == $src_mac && eth.dst == $dst_mac && ip4.src == $src_ip && ip4.dst == $dst_ip && ip.ttl == 64 && icmp4.type == 8"
+    local pod=$(kubectl get pod -n $ovnk_namespace --field-selector=spec.nodeName=$node_name -l $ovnk_node_label -o name)
+    kubectl exec -c ovnkube-controller -n $ovnk_namespace $pod -- ovn-trace --no-leader-only --db unix:/var/run/ovn/ovnsb_db.sock  "inport == \"$inport\" && eth.src == $src_mac && eth.dst == $dst_mac && ip4.src == $src_ip && ip4.dst == $dst_ip && ip.ttl == 64 && icmp4.type == 8"
 }
 
 function ovs-tcpdump() {
@@ -175,8 +178,8 @@ function trace-vm() {
     local vm_port=$(vmi-port $vmi_name)
     local vm_addr=$(vmi-addr $vmi_name)
     local vm_mac=$(vmi-mac $vmi_name)
-    local pod=$(kubectl get pod -n ovn-kubernetes --field-selector=spec.nodeName=$node_name -l name=ovnkube-node -o name)
-    kubectl exec -c ovnkube-controller -n ovn-kubernetes $pod -- ovn-trace "inport == \"$vm_port\" && eth.src == $vm_mac && eth.dst == 00:00:00:00:ff:01 && ip4.src == $vm_addr && ip4.dst == 8.8.8.8 && ip.ttl == 64"
+    local pod=$(kubectl get pod -n $namespace --field-selector=spec.nodeName=$node_name -l $ovnk_node_label -o name)
+    kubectl exec -c ovnkube-controller -n $namespace $pod -- ovn-trace "inport == \"$vm_port\" && eth.src == $vm_mac && eth.dst == 00:00:00:00:ff:01 && ip4.src == $vm_addr && ip4.dst == 8.8.8.8 && ip.ttl == 64"
 }
 
 function node-address() {
