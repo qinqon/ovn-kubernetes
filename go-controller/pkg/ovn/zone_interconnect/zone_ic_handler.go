@@ -470,9 +470,7 @@ func (zic *ZoneInterconnectHandler) createRemoteZoneNodeResources(node *corev1.N
 
 	remotePortAddr := transitRouterPortMac.String()
 	for _, tsNetwork := range transitRouterPortNetworks {
-		if zic.TopologyType() != types.Layer2Topology {
-			remotePortAddr = remotePortAddr + " " + tsNetwork
-		}
+		remotePortAddr = remotePortAddr + " " + tsNetwork
 	}
 
 	lspOptions := map[string]string{

@@ -373,10 +373,11 @@ func (oc *BaseSecondaryLayer2NetworkController) addUpdateLocalNodeEvent(node *co
 	if err != nil {
 		return fmt.Errorf("failed to get join switch port IP address for node %s: %v", node.Name, err)
 	}
+	gwLRPIPs = append(gwLRPIPs, gateways...)
 
 	gwLRPMAC := util.IPAddrToHWAddr(gwLRPIPs[0].IP)
 
-	if err := oc.syncNodeGateway(node, gwLRPMAC.String(), gateways, gateways, subnets, subnets, switchName); err != nil {
+	if err := oc.syncNodeGateway(node, gwLRPMAC.String(), gwLRPIPs, gateways, subnets, subnets, switchName); err != nil {
 		return fmt.Errorf("failed syncing node gateway for layer2 network %s: %w", oc.GetNetworkName(), err)
 	}
 
