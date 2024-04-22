@@ -182,10 +182,6 @@ function trace-vm() {
     kubectl exec -c ovnkube-controller -n $namespace $pod -- ovn-trace "inport == \"$vm_port\" && eth.src == $vm_mac && eth.dst == 00:00:00:00:ff:01 && ip4.src == $vm_addr && ip4.dst == 8.8.8.8 && ip.ttl == 64"
 }
 
-function node-address() {
-    local node_name=$1
-    kubectl get node $node_name -o json | jq -r .status.addresses[0].address
-}
 function lrp-mac() {
     local node_name=$1
     local lrp_name=$2
@@ -202,6 +198,7 @@ function rtoe-mac() {
 function network-subnets() {
     local network=$1
     kubectl get net-attach-def $network -o json | jq -r .spec.config |jq -r .subnets
+    (${IN//,/ })
 }
 
 function add-flows() {
@@ -217,17 +214,27 @@ function add-flows() {
  local ofport=$(ovs-vsctl $node_name get interface $patch_port ofport)
  local eth0_ofport=$(ovs-vsctl $node_name get interface eth0 ofport)
  local default_ofport=$(ovs-vsctl $node_name get interface $default_patch_port ofport)
- local node_address=$(node-address $node_name)
  local lrp_mac=$(rtoe-mac $node_name $network)
- local default_lrp_mac=$(lrp-mac $node_name rtoe-GR_$node_name)
  local network_subnets=$(network-subnets $network)
 
- ovs-ofctl $node_name add-flow $bridge "cookie=$cookie,priority=105,pkt_mark=0x3f0,ip,in_port=$ofport,dl_src=$lrp_mac,actions=ct(commit,zone=64000,exec(set_field:$ct_mark->ct_mark)),output:1"
- ovs-ofctl $node_name add-flow $bridge "cookie=$cookie,priority=100,ip,in_port=$ofport,dl_src=$lrp_mac,actions=ct(commit,zone=64000,exec(set_field:$ct_mark->ct_mark)),output:1"
- ovs-ofctl $node_name add-flow $bridge "cookie=$cookie,priority=109,ip,in_port=$ofport,dl_src=$lrp_mac,ip_src=$network_subnets,actions=ct(commit,zone=64000,exec(set_field:$ct_mark->ct_mark)),output:1"
+ for proto in "ip" "ipv6"; do
+     ovs-ofctl $node_name add-flow $bridge "cookie=$cookie,priority=105,pkt_mark=0x3f0,$proto,in_port=$ofport,dl_src=$lrp_mac,actions=ct(commit,zone=64000,exec(set_field:$ct_mark->ct_mark)),output:1"
+     ovs-ofctl $node_name add-flow $bridge "cookie=$cookie,priority=100,$proto,in_port=$ofport,dl_src=$lrp_mac,actions=ct(commit,zone=64000,exec(set_field:$ct_mark->ct_mark)),output:1"
+     ovs-ofctl $node_name add-flow $bridge "cookie=$cookie,table=1,priority=100,ct_state=+est+trk,ct_mark=$ct_mark,$proto,actions=output:$ofport"
+     ovs-ofctl $node_name add-flow $bridge "cookie=$cookie,table=1,priority=100,ct_state=+rel+trk,ct_mark=$ct_mark,$proto,actions=output:$ofport"
+ done
 
- ovs-ofctl $node_name add-flow $bridge "cookie=$cookie,table=1,priority=100,ct_state=+est+trk,ct_mark=$ct_mark,ip,actions=output:$ofport"
- ovs-ofctl $node_name add-flow $bridge "cookie=$cookie,table=1,priority=100,ct_state=+rel+trk,ct_mark=$ct_mark,ip,actions=output:$ofport"
+ for network_subnet in $(echo $network_subnets | tr "," "\n")
+ do
+    local proto="ip"
+    local ip_src_field_name="ip_src"
+    if [[ $network_subnet =~ ":" ]]; then
+        proto="ipv6"
+        ip_src_field_name="ipv6_src"
+    fi
+    ovs-ofctl $node_name add-flow $bridge "cookie=$cookie,priority=109,$proto,in_port=$ofport,dl_src=$lrp_mac,$ip_src_field_name=$network_subnet,actions=ct(commit,zone=64000,exec(set_field:$ct_mark->ct_mark)),output:1"
+ done
+
 
  ovs-ofctl $node_name add-flow $bridge "cookie=$cookie,priority=10,table=0,in_port=$eth0_ofport,dl_dst=$lrp_mac,actions=output:$default_ofport,$ofport,LOCAL"
  ovs-ofctl $node_name add-flow $bridge "cookie=$cookie,priority=10,in_port=$ofport,dl_src=$lrp_mac,actions=NORMAL"
