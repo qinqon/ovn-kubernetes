@@ -22,6 +22,11 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 	certificatesinformers "k8s.io/client-go/informers/certificates/v1"
 
+	ocpnetworkapiv1alpha1 "github.com/openshift/api/network/v1alpha1"
+	ocpnetworkscheme "github.com/openshift/client-go/network/clientset/versioned/scheme"
+	ocpnetworkinformerfactory "github.com/openshift/client-go/network/informers/externalversions"
+	ocpnetworkinformerv1alpha1 "github.com/openshift/client-go/network/informers/externalversions/network/v1alpha1"
+
 	egressipapi "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/egressip/v1"
 	egressipscheme "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/egressip/v1/apis/clientset/versioned/scheme"
 	egressipinformerfactory "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/egressip/v1/apis/informers/externalversions"
@@ -37,6 +42,7 @@ import (
 	egressqosinformerfactory "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/egressqos/v1/apis/informers/externalversions"
 	egressqosinformer "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/egressqos/v1/apis/informers/externalversions/egressqos/v1"
 
+	"github.com/k8snetworkplumbingwg/ipamclaims/pkg/crd/ipamclaims/v1alpha1/apis/informers/externalversions/ipamclaims/v1alpha1"
 	nadapi "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
 	nadscheme "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/client/clientset/versioned/scheme"
 
@@ -54,6 +60,11 @@ import (
 	adminbasedpolicyscheme "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/adminpolicybasedroute/v1/apis/clientset/versioned/scheme"
 	adminbasedpolicyinformerfactory "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/adminpolicybasedroute/v1/apis/informers/externalversions"
 	adminpolicybasedrouteinformer "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/adminpolicybasedroute/v1/apis/informers/externalversions/adminpolicybasedroute/v1"
+
+	ipamclaimsapi "github.com/k8snetworkplumbingwg/ipamclaims/pkg/crd/ipamclaims/v1alpha1"
+	ipamclaimsscheme "github.com/k8snetworkplumbingwg/ipamclaims/pkg/crd/ipamclaims/v1alpha1/apis/clientset/versioned/scheme"
+	ipamclaimsfactory "github.com/k8snetworkplumbingwg/ipamclaims/pkg/crd/ipamclaims/v1alpha1/apis/informers/externalversions"
+	ipamclaimslister "github.com/k8snetworkplumbingwg/ipamclaims/pkg/crd/ipamclaims/v1alpha1/apis/listers/ipamclaims/v1alpha1"
 
 	kapi "k8s.io/api/core/v1"
 	discovery "k8s.io/api/discovery/v1"
@@ -85,11 +96,13 @@ type WatchFactory struct {
 	anpFactory           anpinformerfactory.SharedInformerFactory
 	eipFactory           egressipinformerfactory.SharedInformerFactory
 	efFactory            egressfirewallinformerfactory.SharedInformerFactory
+	dnsFactory           ocpnetworkinformerfactory.SharedInformerFactory
 	cpipcFactory         ocpcloudnetworkinformerfactory.SharedInformerFactory
 	egressQoSFactory     egressqosinformerfactory.SharedInformerFactory
 	mnpFactory           mnpinformerfactory.SharedInformerFactory
 	egressServiceFactory egressserviceinformerfactory.SharedInformerFactory
 	apbRouteFactory      adminbasedpolicyinformerfactory.SharedInformerFactory
+	ipamClaimsFactory    ipamclaimsfactory.SharedInformerFactory
 	informers            map[reflect.Type]*informer
 
 	stopChan chan struct{}
@@ -164,6 +177,7 @@ var (
 	LocalPodSelectorType                  reflect.Type = reflect.TypeOf(&localPodSelector{})
 	NetworkAttachmentDefinitionType       reflect.Type = reflect.TypeOf(&nadapi.NetworkAttachmentDefinition{})
 	MultiNetworkPolicyType                reflect.Type = reflect.TypeOf(&mnpapi.MultiNetworkPolicy{})
+	IPAMClaimsType                        reflect.Type = reflect.TypeOf(&ipamclaimsapi.IPAMClaim{})
 
 	// Resource types used in ovnk node
 	NamespaceExGwType                         reflect.Type = reflect.TypeOf(&namespaceExGw{})
@@ -223,12 +237,19 @@ func NewOVNKubeControllerWatchFactory(ovnClientset *util.OVNKubeControllerClient
 		anpFactory:           anpinformerfactory.NewSharedInformerFactory(ovnClientset.ANPClient, resyncInterval),
 		eipFactory:           egressipinformerfactory.NewSharedInformerFactory(ovnClientset.EgressIPClient, resyncInterval),
 		efFactory:            egressfirewallinformerfactory.NewSharedInformerFactory(ovnClientset.EgressFirewallClient, resyncInterval),
+		dnsFactory:           ocpnetworkinformerfactory.NewSharedInformerFactoryWithOptions(ovnClientset.OCPNetworkClient, resyncInterval, ocpnetworkinformerfactory.WithNamespace(config.Kubernetes.OVNConfigNamespace)),
 		egressQoSFactory:     egressqosinformerfactory.NewSharedInformerFactory(ovnClientset.EgressQoSClient, resyncInterval),
 		mnpFactory:           mnpinformerfactory.NewSharedInformerFactory(ovnClientset.MultiNetworkPolicyClient, resyncInterval),
 		egressServiceFactory: egressserviceinformerfactory.NewSharedInformerFactory(ovnClientset.EgressServiceClient, resyncInterval),
 		apbRouteFactory:      adminbasedpolicyinformerfactory.NewSharedInformerFactory(ovnClientset.AdminPolicyRouteClient, resyncInterval),
 		informers:            make(map[reflect.Type]*informer),
 		stopChan:             make(chan struct{}),
+	}
+
+	if config.OVNKubernetesFeature.EnableMultiNetwork &&
+		config.OVNKubernetesFeature.EnablePersistentIPs &&
+		!config.OVNKubernetesFeature.EnableInterconnect {
+		wf.ipamClaimsFactory = ipamclaimsfactory.NewSharedInformerFactory(ovnClientset.IPAMClaimsClient, resyncInterval)
 	}
 
 	if err := anpapi.AddToScheme(anpscheme.Scheme); err != nil {
@@ -239,6 +260,9 @@ func NewOVNKubeControllerWatchFactory(ovnClientset *util.OVNKubeControllerClient
 		return nil, err
 	}
 	if err := egressfirewallapi.AddToScheme(egressfirewallscheme.Scheme); err != nil {
+		return nil, err
+	}
+	if err := ocpnetworkapiv1alpha1.Install(ocpnetworkscheme.Scheme); err != nil {
 		return nil, err
 	}
 	if err := egressqosapi.AddToScheme(egressqosscheme.Scheme); err != nil {
@@ -256,6 +280,10 @@ func NewOVNKubeControllerWatchFactory(ovnClientset *util.OVNKubeControllerClient
 	}
 
 	if err := mnpapi.AddToScheme(mnpscheme.Scheme); err != nil {
+		return nil, err
+	}
+
+	if err := ipamclaimsapi.AddToScheme(ipamclaimsscheme.Scheme); err != nil {
 		return nil, err
 	}
 
@@ -329,6 +357,11 @@ func NewOVNKubeControllerWatchFactory(ovnClientset *util.OVNKubeControllerClient
 		if err != nil {
 			return nil, err
 		}
+
+		if config.OVNKubernetesFeature.EnableDNSNameResolver {
+			// make sure shared informer is created for a factory, so on wf.dnsFactory.Start() it is initialized and caches are synced.
+			wf.dnsFactory.Network().V1alpha1().DNSNameResolvers().Informer()
+		}
 	}
 	if config.OVNKubernetesFeature.EnableEgressQoS {
 		wf.informers[EgressQoSType], err = newInformer(EgressQoSType, wf.egressQoSFactory.K8s().V1().EgressQoSes().Informer())
@@ -338,6 +371,15 @@ func NewOVNKubeControllerWatchFactory(ovnClientset *util.OVNKubeControllerClient
 	}
 	if config.OVNKubernetesFeature.EnableEgressService {
 		wf.informers[EgressServiceType], err = newInformer(EgressServiceType, wf.egressServiceFactory.K8s().V1().EgressServices().Informer())
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if config.OVNKubernetesFeature.EnableMultiNetwork &&
+		config.OVNKubernetesFeature.EnablePersistentIPs &&
+		!config.OVNKubernetesFeature.EnableInterconnect {
+		wf.informers[IPAMClaimsType], err = newInformer(IPAMClaimsType, wf.ipamClaimsFactory.K8s().V1alpha1().IPAMClaims().Informer())
 		if err != nil {
 			return nil, err
 		}
@@ -390,6 +432,15 @@ func (wf *WatchFactory) Start() error {
 				return fmt.Errorf("error in syncing cache for %v informer", oType)
 			}
 		}
+
+		if config.OVNKubernetesFeature.EnableDNSNameResolver && wf.dnsFactory != nil {
+			wf.dnsFactory.Start(wf.stopChan)
+			for oType, synced := range waitForCacheSyncWithTimeout(wf.dnsFactory, wf.stopChan) {
+				if !synced {
+					return fmt.Errorf("error in syncing cache for %v informer", oType)
+				}
+			}
+		}
 	}
 	if util.PlatformTypeIsEgressIPCloudProvider() && wf.cpipcFactory != nil {
 		wf.cpipcFactory.Start(wf.stopChan)
@@ -429,6 +480,15 @@ func (wf *WatchFactory) Start() error {
 	if config.OVNKubernetesFeature.EnableMultiExternalGateway && wf.apbRouteFactory != nil {
 		wf.apbRouteFactory.Start(wf.stopChan)
 		for oType, synced := range waitForCacheSyncWithTimeout(wf.apbRouteFactory, wf.stopChan) {
+			if !synced {
+				return fmt.Errorf("error in syncing cache for %v informer", oType)
+			}
+		}
+	}
+
+	if wf.ipamClaimsFactory != nil {
+		wf.ipamClaimsFactory.Start(wf.stopChan)
+		for oType, synced := range waitForCacheSyncWithTimeout(wf.ipamClaimsFactory, wf.stopChan) {
 			if !synced {
 				return fmt.Errorf("error in syncing cache for %v informer", oType)
 			}
@@ -569,16 +629,33 @@ func NewClusterManagerWatchFactory(ovnClientset *util.OVNClusterManagerClientset
 		eipFactory:           egressipinformerfactory.NewSharedInformerFactory(ovnClientset.EgressIPClient, resyncInterval),
 		cpipcFactory:         ocpcloudnetworkinformerfactory.NewSharedInformerFactory(ovnClientset.CloudNetworkClient, resyncInterval),
 		egressServiceFactory: egressserviceinformerfactory.NewSharedInformerFactoryWithOptions(ovnClientset.EgressServiceClient, resyncInterval),
+		dnsFactory:           ocpnetworkinformerfactory.NewSharedInformerFactoryWithOptions(ovnClientset.OCPNetworkClient, resyncInterval, ocpnetworkinformerfactory.WithNamespace(config.Kubernetes.OVNConfigNamespace)),
 		apbRouteFactory:      adminbasedpolicyinformerfactory.NewSharedInformerFactory(ovnClientset.AdminPolicyRouteClient, resyncInterval),
 		egressQoSFactory:     egressqosinformerfactory.NewSharedInformerFactory(ovnClientset.EgressQoSClient, resyncInterval),
 		informers:            make(map[reflect.Type]*informer),
 		stopChan:             make(chan struct{}),
 	}
+
+	if config.OVNKubernetesFeature.EnableMultiNetwork &&
+		config.OVNKubernetesFeature.EnablePersistentIPs &&
+		config.OVNKubernetesFeature.EnableInterconnect {
+		wf.ipamClaimsFactory = ipamclaimsfactory.NewSharedInformerFactory(ovnClientset.IPAMClaimsClient, resyncInterval)
+	}
+
 	if err := egressipapi.AddToScheme(egressipscheme.Scheme); err != nil {
 		return nil, err
 	}
 
 	if err := egressserviceapi.AddToScheme(egressservicescheme.Scheme); err != nil {
+		return nil, err
+	}
+	if err := ipamclaimsapi.AddToScheme(ipamclaimsscheme.Scheme); err != nil {
+		return nil, err
+	}
+	if err := egressfirewallapi.AddToScheme(egressfirewallscheme.Scheme); err != nil {
+		return nil, err
+	}
+	if err := ocpnetworkapiv1alpha1.Install(ocpnetworkscheme.Scheme); err != nil {
 		return nil, err
 	}
 
@@ -645,6 +722,13 @@ func NewClusterManagerWatchFactory(ovnClientset *util.OVNClusterManagerClientset
 		if err != nil {
 			return nil, err
 		}
+
+		if config.OVNKubernetesFeature.EnablePersistentIPs {
+			wf.informers[IPAMClaimsType], err = newInformer(IPAMClaimsType, wf.ipamClaimsFactory.K8s().V1alpha1().IPAMClaims().Informer())
+			if err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	if config.OVNKubernetesFeature.EnableMultiExternalGateway {
@@ -655,6 +739,11 @@ func NewClusterManagerWatchFactory(ovnClientset *util.OVNClusterManagerClientset
 	if config.OVNKubernetesFeature.EnableEgressFirewall {
 		// make sure shared informer is created for a factory, so on wf.efFactory.Start() it is initialized and caches are synced.
 		wf.efFactory.K8s().V1().EgressFirewalls().Informer()
+
+		if config.OVNKubernetesFeature.EnableDNSNameResolver {
+			// make sure shared informer is created for a factory, so on wf.dnsFactory.Start() it is initialized and caches are synced.
+			wf.dnsFactory.Network().V1alpha1().DNSNameResolvers().Informer()
+		}
 	}
 
 	return wf, nil
@@ -723,7 +812,12 @@ func getObjectMeta(objType reflect.Type, obj interface{}) (*metav1.ObjectMeta, e
 		if multinetworkpolicy, ok := obj.(*mnpapi.MultiNetworkPolicy); ok {
 			return &multinetworkpolicy.ObjectMeta, nil
 		}
+	case IPAMClaimsType:
+		if persistentips, ok := obj.(*ipamclaimsapi.IPAMClaim); ok {
+			return &persistentips.ObjectMeta, nil
+		}
 	}
+
 	return nil, fmt.Errorf("cannot get ObjectMeta from type %v", objType)
 }
 
@@ -830,6 +924,11 @@ func (wf *WatchFactory) GetResourceHandlerFunc(objType reflect.Type) (AddHandler
 			return wf.AddEndpointSliceHandler(funcs, processExisting)
 		}, nil
 
+	case IPAMClaimsType:
+		return func(namespace string, sel labels.Selector,
+			funcs cache.ResourceEventHandler, processExisting func([]interface{}) error) (*Handler, error) {
+			return wf.AddIPAMClaimsHandler(funcs, processExisting)
+		}, nil
 	}
 	return nil, fmt.Errorf("cannot get ObjectMeta from type %v", objType)
 }
@@ -907,6 +1006,16 @@ func (wf *WatchFactory) AddFilteredPodHandler(namespace string, sel labels.Selec
 // RemovePodHandler removes a Pod object event handler function
 func (wf *WatchFactory) RemovePodHandler(handler *Handler) {
 	wf.removeHandler(PodType, handler)
+}
+
+// RemoveIPAMClaimsHandler removes a PersistentIPs object event handler function
+func (wf *WatchFactory) RemoveIPAMClaimsHandler(handler *Handler) {
+	wf.removeHandler(IPAMClaimsType, handler)
+}
+
+// AddIPAMClaimsHandler adds a handler function that will be executed on AddPersistentIPsobject changes
+func (wf *WatchFactory) AddIPAMClaimsHandler(handlerFuncs cache.ResourceEventHandler, processExisting func([]interface{}) error) (*Handler, error) {
+	return wf.addHandler(IPAMClaimsType, "", nil, handlerFuncs, processExisting, defaultHandlerPriority)
 }
 
 // AddServiceHandler adds a handler function that will be executed on Service object changes
@@ -1199,6 +1308,12 @@ func (wf *WatchFactory) CertificateSigningRequestInformer() certificatesinformer
 	return wf.iFactory.Certificates().V1().CertificateSigningRequests()
 }
 
+// GetIPAMClaim gets a specific multinetwork policy by the namespace/name
+func (wf *WatchFactory) GetIPAMClaim(namespace, name string) (*ipamclaimsapi.IPAMClaim, error) {
+	ipamClaimsLister := wf.informers[IPAMClaimsType].lister.(ipamclaimslister.IPAMClaimLister)
+	return ipamClaimsLister.IPAMClaims(namespace).Get(name)
+}
+
 func (wf *WatchFactory) NodeInformer() cache.SharedIndexInformer {
 	return wf.informers[NodeType].inf
 }
@@ -1271,6 +1386,14 @@ func (wf *WatchFactory) EgressIPInformer() egressipinformer.EgressIPInformer {
 
 func (wf *WatchFactory) EgressFirewallInformer() egressfirewallinformer.EgressFirewallInformer {
 	return wf.efFactory.K8s().V1().EgressFirewalls()
+}
+
+func (wf *WatchFactory) IPAMClaimsInformer() v1alpha1.IPAMClaimInformer {
+	return wf.ipamClaimsFactory.K8s().V1alpha1().IPAMClaims()
+}
+
+func (wf *WatchFactory) DNSNameResolverInformer() ocpnetworkinformerv1alpha1.DNSNameResolverInformer {
+	return wf.dnsFactory.Network().V1alpha1().DNSNameResolvers()
 }
 
 // withServiceNameAndNoHeadlessServiceSelector returns a LabelSelector (added to the

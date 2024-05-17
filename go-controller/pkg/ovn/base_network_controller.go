@@ -20,6 +20,7 @@ import (
 	addressset "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/address_set"
 	lsm "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/logical_switch_manager"
 	zoneic "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/zone_interconnect"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/persistentips"
 	ovnretry "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/retry"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/syncmap"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
@@ -86,6 +87,8 @@ type BaseNetworkController struct {
 	retryNamespaces *ovnretry.RetryFramework
 	// retry framework for network policies
 	retryNetworkPolicies *ovnretry.RetryFramework
+	// retry framework for IPAMClaims
+	retryIPAMClaims *ovnretry.RetryFramework
 
 	// pod events factory handler
 	podHandler *factory.Handler
@@ -93,12 +96,16 @@ type BaseNetworkController struct {
 	nodeHandler *factory.Handler
 	// namespace events factory Handler
 	namespaceHandler *factory.Handler
+	// ipam claims events factory Handler
+	ipamClaimsHandler *factory.Handler
 
 	// A cache of all logical switches seen by the watcher and their subnets
 	lsManager *lsm.LogicalSwitchManager
 
 	// An utility to allocate the PodAnnotation to pods
 	podAnnotationAllocator *pod.PodAnnotationAllocator
+
+	ipamClaimsReconciler *persistentips.IPAMClaimReconciler
 
 	// A cache of all logical ports known to the controller
 	logicalPortCache *portCache
@@ -153,6 +160,21 @@ type BaseNetworkController struct {
 	// might have been already be released on startup
 	releasedPodsBeforeStartup  map[string]sets.Set[string]
 	releasedPodsOnStartupMutex sync.Mutex
+
+	// Cluster-wide router default Control Plane Protection (COPP) UUID
+	defaultCOPPUUID string
+
+	// Cluster wide Load_Balancer_Group UUID.
+	// Includes all node switches and node gateway routers.
+	clusterLoadBalancerGroupUUID string
+
+	// Cluster wide router Load_Balancer_Group UUID.
+	// Includes all node gateway routers.
+	routerLoadBalancerGroupUUID string
+
+	// IP addresses of OVN Cluster logical router port ("GwRouterToJoinSwitchPrefix + OVNClusterRouter")
+	// connecting to the join switch
+	ovnClusterLRPToJoinIfAddrs []*net.IPNet
 }
 
 // BaseSecondaryNetworkController structure holds per-network fields and network specific
@@ -161,6 +183,10 @@ type BaseSecondaryNetworkController struct {
 	BaseNetworkController
 	// multi-network policy events factory handler
 	policyHandler *factory.Handler
+}
+
+func getNetworkControllerName(netName string) string {
+	return netName + "-network-controller"
 }
 
 // NewCommonNetworkControllerInfo creates CommonNetworkControllerInfo shared by controllers
@@ -516,7 +542,7 @@ func (bnc *BaseNetworkController) deleteNamespaceLocked(ns string) (*namespaceIn
 	}
 	if nsInfo.addressSet != nil {
 		// Empty the address set, then delete it after an interval.
-		if err := nsInfo.addressSet.SetIPs(nil); err != nil {
+		if err := nsInfo.addressSet.SetAddresses(nil); err != nil {
 			klog.Errorf("Warning: failed to empty address set for deleted NS %s: %v", ns, err)
 		}
 
@@ -590,14 +616,6 @@ func (bnc *BaseNetworkController) doesNetworkRequireIPAM() bool {
 	return util.DoesNetworkRequireIPAM(bnc.NetInfo)
 }
 
-func (bnc *BaseNetworkController) buildPortGroup(hashName, name string, ports []*nbdb.LogicalSwitchPort, acls []*nbdb.ACL) *nbdb.PortGroup {
-	externalIds := map[string]string{"name": name}
-	if bnc.IsSecondary() {
-		externalIds[types.NetworkExternalID] = bnc.GetNetworkName()
-	}
-	return libovsdbops.BuildPortGroup(hashName, ports, acls, externalIds)
-}
-
 func (bnc *BaseNetworkController) getPodNADNames(pod *kapi.Pod) []string {
 	if !bnc.IsSecondary() {
 		return []string{types.DefaultNetworkName}
@@ -606,13 +624,17 @@ func (bnc *BaseNetworkController) getPodNADNames(pod *kapi.Pod) []string {
 	return podNadNames
 }
 
+func (bnc *BaseNetworkController) getClusterPortGroupDbIDs(base string) *libovsdbops.DbObjectIDs {
+	return libovsdbops.NewDbObjectIDs(libovsdbops.PortGroupCluster, bnc.controllerName,
+		map[libovsdbops.ExternalIDKey]string{
+			libovsdbops.ObjectNameKey: base,
+		})
+}
+
 // getClusterPortGroupName gets network scoped port group hash name; base is either
 // ClusterPortGroupNameBase or ClusterRtrPortGroupNameBase.
 func (bnc *BaseNetworkController) getClusterPortGroupName(base string) string {
-	if bnc.IsSecondary() {
-		return libovsdbutil.HashedPortGroup(bnc.GetNetworkName()) + "_" + base
-	}
-	return base
+	return libovsdbutil.GetPortGroupName(bnc.getClusterPortGroupDbIDs(base))
 }
 
 // GetLocalZoneNodes returns the list of local zone nodes
@@ -730,4 +752,94 @@ func (bnc *BaseNetworkController) findMigratablePodIPsForSubnets(subnets []*net.
 		}
 	}
 	return ipList, nil
+}
+
+func (oc *BaseNetworkController) syncGatewayLogicalNetwork(node *kapi.Node, l3GatewayConfig *util.L3GatewayConfig,
+	gwLRPMAC string, gwLRPIPs, drLRPIfAddrs, clusterSubnets, hostSubnets []*net.IPNet, hostAddrs []string, joinSwitchName string) error {
+	var err error
+	enableGatewayMTU := util.ParseNodeGatewayMTUSupport(node)
+
+	err = oc.gatewayInit(node, clusterSubnets, hostSubnets, l3GatewayConfig, oc.SCTPSupport, gwLRPMAC, gwLRPIPs, drLRPIfAddrs,
+		enableGatewayMTU, joinSwitchName)
+	if err != nil {
+		return fmt.Errorf("failed to init shared interface gateway: %v", err)
+	}
+
+	for _, subnet := range hostSubnets {
+		hostIfAddr := util.GetNodeManagementIfAddr(subnet)
+		l3GatewayConfigIP, err := util.MatchFirstIPNetFamily(utilnet.IsIPv6(hostIfAddr.IP), l3GatewayConfig.IPAddresses)
+		if err != nil {
+			return err
+		}
+		relevantHostIPs, err := util.MatchAllIPStringFamily(utilnet.IsIPv6(hostIfAddr.IP), hostAddrs)
+		if err != nil && err != util.ErrorNoIP {
+			return err
+		}
+		if err := oc.addPolicyBasedRoutes(node.Name, hostIfAddr.IP.String(), l3GatewayConfigIP, relevantHostIPs); err != nil {
+			return err
+		}
+	}
+
+	return err
+}
+
+// syncNodeGateway ensures a node's gateway router is configured
+func (oc *BaseNetworkController) syncNodeGateway(node *kapi.Node, gwLRPMAC string, gwLRPIPs, drLRPIfAddrs, clusterSubnets, hostSubnets []*net.IPNet, joinSwitchName string) error {
+	l3GatewayConfig, err := util.ParseNodeL3GatewayAnnotation(node)
+	if err != nil {
+		return err
+	}
+
+	if hostSubnets == nil {
+		hostSubnets, err = util.ParseNodeHostSubnetAnnotation(node, oc.GetNetworkName())
+		if err != nil {
+			return err
+		}
+	}
+
+	if l3GatewayConfig.Mode == config.GatewayModeDisabled {
+		if err := oc.gatewayCleanup(node.Name, joinSwitchName); err != nil {
+			return fmt.Errorf("error cleaning up gateway for node %s: %v", node.Name, err)
+		}
+	} else if hostSubnets != nil {
+		var hostAddrs []string
+		if config.Gateway.Mode == config.GatewayModeShared {
+			hostAddrs, err = util.GetNodeHostAddrs(node)
+			if err != nil && !util.IsAnnotationNotSetError(err) {
+				return fmt.Errorf("failed to get host CIDRs for node: %s: %v", node.Name, err)
+			}
+		}
+		if err := oc.syncGatewayLogicalNetwork(node, l3GatewayConfig, gwLRPMAC, gwLRPIPs, drLRPIfAddrs, clusterSubnets, hostSubnets, hostAddrs, joinSwitchName); err != nil {
+			return fmt.Errorf("error creating gateway for node %s: %v", node.Name, err)
+		}
+	}
+	return nil
+}
+
+// getOVNClusterRouterPortToJoinSwitchIPs returns the IP addresses for the
+// logical router port "GwRouterToJoinSwitchPrefix + OVNClusterRouter" from the
+// config.Gateway.V4JoinSubnet and  config.Gateway.V6JoinSubnet. This will
+// always be the first IP from these subnets.
+func (oc *BaseNetworkController) getOVNClusterRouterPortToJoinSwitchIfAddrs() (gwLRPIPs []*net.IPNet, err error) {
+	joinSubnetsConfig := []string{}
+	if config.IPv4Mode {
+		joinSubnetsConfig = append(joinSubnetsConfig, config.Gateway.V4JoinSubnet)
+	}
+	if config.IPv6Mode {
+		joinSubnetsConfig = append(joinSubnetsConfig, config.Gateway.V6JoinSubnet)
+	}
+	for _, joinSubnetString := range joinSubnetsConfig {
+		_, joinSubnet, err := net.ParseCIDR(joinSubnetString)
+		if err != nil {
+			return nil, fmt.Errorf("error parsing join subnet string %s: %v", joinSubnetString, err)
+		}
+		joinSubnetBaseIP := utilnet.BigForIP(joinSubnet.IP)
+		ipnet := &net.IPNet{
+			IP:   utilnet.AddIPOffset(joinSubnetBaseIP, 1),
+			Mask: joinSubnet.Mask,
+		}
+		gwLRPIPs = append(gwLRPIPs, ipnet)
+	}
+
+	return gwLRPIPs, nil
 }

@@ -31,6 +31,7 @@ import (
 	e2epodoutput "k8s.io/kubernetes/test/e2e/framework/pod/output"
 	e2erc "k8s.io/kubernetes/test/e2e/framework/rc"
 	e2eservice "k8s.io/kubernetes/test/e2e/framework/service"
+	e2eskipper "k8s.io/kubernetes/test/e2e/framework/skipper"
 	testutils "k8s.io/kubernetes/test/utils"
 )
 
@@ -71,6 +72,36 @@ var _ = ginkgo.Describe("Services", func() {
 
 	udpPort := int32(rand.Intn(1000) + 10000)
 	udpPortS := fmt.Sprintf("%d", udpPort)
+
+	ginkgo.It("Allow connection to an external IP using a source port that is equal to a node port", func() {
+		const (
+			nodePort    = 31990
+			connTimeout = "2"
+			dstIPv4     = "1.1.1.1"
+			dstPort     = "80"
+		)
+		if IsIPv6Cluster(f.ClientSet) {
+			e2eskipper.Skipf("Test requires IPv4 or IPv4 primary dualstack cluster")
+		}
+		ginkgo.By("create node port service")
+		jig := e2eservice.NewTestJig(cs, f.Namespace.Name, serviceName)
+		_, err := jig.CreateTCPService(context.TODO(), func(svc *v1.Service) {
+			svc.Spec.Type = v1.ServiceTypeNodePort
+			svc.Spec.Ports[0].NodePort = nodePort
+		})
+		framework.ExpectNoError(err, "failed to create TCP node port service")
+		ginkgo.By("create pod selected by node port service")
+		serverPod := e2epod.NewAgnhostPod(f.Namespace.Name, "svc-backend", nil, nil, nil)
+		serverPod.Labels = jig.Labels
+		e2epod.NewPodClient(f).CreateSync(context.TODO(), serverPod)
+		ginkgo.By("create pod which will connect externally")
+		clientPod := e2epod.NewAgnhostPod(f.Namespace.Name, "client-for-external", nil, nil, nil)
+		e2epod.NewPodClient(f).CreateSync(context.TODO(), clientPod)
+		ginkgo.By("connect externally pinning the source port to equal the node port")
+		_, err = e2ekubectl.RunKubectl(clientPod.Namespace, "exec", clientPod.Name, "--", "nc",
+			"-p", strconv.Itoa(nodePort), "-z", "-w", connTimeout, dstIPv4, dstPort)
+		framework.ExpectNoError(err, "expected connection to succeed using source port identical to node port")
+	})
 
 	ginkgo.It("Creates a host-network service, and ensures that host-network pods can connect to it", func() {
 		namespace := f.Namespace.Name
@@ -365,6 +396,10 @@ var _ = ginkgo.Describe("Services", func() {
 				ginkgo.It("queries to the nodePort service shall work for UDP", func() {
 					for _, size := range []string{"small", "large"} {
 						for _, serviceNodeIP := range serviceNodeInternalIPs {
+							flushCmd := "ip route flush cache"
+							if utilnet.IsIPv6String(serviceNodeIP) {
+								flushCmd = "ip -6 route flush cache"
+							}
 							if size == "large" && !hostNetwork {
 								// Flushing the IP route cache will remove any routes in the cache
 								// that are a result of receiving a "need to frag" packet.
@@ -372,7 +407,7 @@ var _ = ginkgo.Describe("Services", func() {
 								_, err := e2epodoutput.RunHostCmdWithRetries(
 									clientPod.Namespace,
 									clientPod.Name,
-									"ip route flush cache",
+									flushCmd,
 									framework.Poll,
 									60*time.Second)
 								framework.ExpectNoError(err, "Flushing the ip route cache failed")
@@ -464,8 +499,11 @@ var _ = ginkgo.Describe("Services", func() {
 								if isInterconnectEnabled() {
 									containerName = "ovnkube-controller"
 								}
-								_, err := e2ekubectl.RunKubectl(ovnNs, "exec", ovnKubeNodePod.Name, "--container", containerName, "--",
-									"ip", "route", "flush", "cache")
+
+								arguments := []string{"exec", ovnKubeNodePod.Name, "--container", containerName, "--"}
+								sepFlush := strings.Split(flushCmd, " ")
+								arguments = append(arguments, sepFlush...)
+								_, err := e2ekubectl.RunKubectl(ovnNs, arguments...)
 								framework.ExpectNoError(err, "Flushing the ip route cache failed")
 							}
 						}
@@ -685,8 +723,12 @@ var _ = ginkgo.Describe("Services", func() {
 			ginkgo.By("Deleting additional IP addresses from nodes")
 			for nodeName, ipFamilies := range nodeIPs {
 				for _, ip := range ipFamilies {
+					subnetMask := "/32"
+					if utilnet.IsIPv6String(ip) {
+						subnetMask = "/128"
+					}
 					_, err := runCommand(containerRuntime, "exec", nodeName, "ip", "addr", "delete",
-						fmt.Sprintf("%s/32", ip), "dev", "breth0")
+						fmt.Sprintf("%s%s", ip, subnetMask), "dev", "breth0")
 					if err != nil && !strings.Contains(err.Error(),
 						"RTNETLINK answers: Cannot assign requested address") {
 						framework.Failf("failed to remove ip address %s from node %s, err: %q", ip, nodeName, err)
@@ -759,7 +801,7 @@ var _ = ginkgo.Describe("Services", func() {
 					nodeIPs[node.Name] = make(map[int]string)
 				}
 				if utilnet.IsIPv6String(e2enode.GetAddresses(&node, v1.NodeInternalIP)[0]) {
-					newIP = "fc00:f853:ccd:e794::" + strconv.Itoa(i)
+					newIP = "fc00:f853:ccd:e793:1111::" + strconv.Itoa(i)
 					nodeIPs[node.Name][6] = newIP
 				} else {
 					newIP = "172.18.1." + strconv.Itoa(i+1)
@@ -831,7 +873,7 @@ var _ = ginkgo.Describe("Services", func() {
 								"hostname")
 							// Expect to receive a valid hostname
 							return nodesHostnames.Has(epHostname)
-						}, "20s", "1s").Should(gomega.BeTrue())
+						}, "40s", "1s").Should(gomega.BeTrue())
 					}
 				}
 			}
@@ -1084,9 +1126,9 @@ var _ = ginkgo.Describe("Service Hairpin SNAT", func() {
 		framework.ExpectNoError(err, "failed to parse client ip:port")
 
 		if isIpv6 {
-			framework.ExpectEqual(clientIP, V6LBHairpinMasqueradeIP, fmt.Sprintf("returned client ipv6: %v was not correct", clientIP))
+			gomega.Expect(clientIP).To(gomega.Equal(V6LBHairpinMasqueradeIP), fmt.Sprintf("returned client ipv6: %v was not correct", clientIP))
 		} else {
-			framework.ExpectEqual(clientIP, V4LBHairpinMasqueradeIP, fmt.Sprintf("returned client ipv4: %v was not correct", clientIP))
+			gomega.Expect(clientIP).To(gomega.Equal(V4LBHairpinMasqueradeIP), fmt.Sprintf("returned client ipv4: %v was not correct", clientIP))
 		}
 	})
 
@@ -1117,7 +1159,7 @@ var _ = ginkgo.Describe("Service Hairpin SNAT", func() {
 		clientIP, _, err = net.SplitHostPort(clientIP)
 		framework.ExpectNoError(err, "failed to parse client ip:port")
 
-		framework.ExpectEqual(clientIP, nodeIP, fmt.Sprintf("returned client: %v was not correct", clientIP))
+		gomega.Expect(clientIP).To(gomega.Equal(nodeIP), fmt.Sprintf("returned client: %v was not correct", clientIP))
 	})
 
 })
@@ -1363,7 +1405,7 @@ metadata:
 		framework.ExpectNoError(err, fmt.Sprintf("failed to get service lb ip: %s, err: %v", svcName, err))
 
 		numberOfETPRules := pokeIPTableRules(backendNodeName, "OVN-KUBE-EXTERNALIP")
-		framework.ExpectEqual(numberOfETPRules, 5)
+		gomega.Expect(numberOfETPRules).To(gomega.Equal(5))
 
 		// curl the LB service from the client container to trigger BGP route advertisement
 		ginkgo.By("by sending a TCP packet to service " + svcName + " with type=LoadBalancer in namespace " + namespaceName + " with backend pod " + backendName)
@@ -1520,13 +1562,13 @@ spec:
 		framework.ExpectNoError(err)
 
 		output := e2ekubectl.RunKubectlOrDie("default", "get", "svc", svcName, "-o=jsonpath='{.spec.allocateLoadBalancerNodePorts}'")
-		framework.ExpectEqual(output, "'false'")
+		gomega.Expect(output).To(gomega.Equal("'false'"))
 
 		err = patchServiceStringValue(f.ClientSet, svcName, "default", "/spec/externalTrafficPolicy", "Local")
 		framework.ExpectNoError(err)
 
 		output = e2ekubectl.RunKubectlOrDie("default", "get", "svc", svcName, "-o=jsonpath='{.spec.externalTrafficPolicy}'")
-		framework.ExpectEqual(output, "'Local'")
+		gomega.Expect(output).To(gomega.Equal("'Local'"))
 
 		time.Sleep(time.Second * 5) // buffer to ensure all rules are created correctly
 
@@ -1585,7 +1627,7 @@ spec:
 		err = patchServiceStringValue(f.ClientSet, svcName, "default", "/spec/externalTrafficPolicy", "Local")
 		framework.ExpectNoError(err)
 		output := e2ekubectl.RunKubectlOrDie("default", "get", "svc", svcName, "-o=jsonpath='{.spec.externalTrafficPolicy}'")
-		framework.ExpectEqual(output, "'Local'")
+		gomega.Expect(output).To(gomega.Equal("'Local'"))
 		time.Sleep(time.Second * 5) // buffer to ensure all rules are created correctly
 
 		ginkgo.By("1 nodeIP route is advertised correctly by metalb BGP routes")
@@ -1653,9 +1695,9 @@ spec:
 		err = patchServiceStringValue(f.ClientSet, svcName, "default", "/spec/sessionAffinity", "ClientIP")
 		framework.ExpectNoError(err)
 		output = e2ekubectl.RunKubectlOrDie("default", "get", "svc", svcName, "-o=jsonpath='{.spec.sessionAffinity}'")
-		framework.ExpectEqual(output, "'ClientIP'")
+		gomega.Expect(output).To(gomega.Equal("'ClientIP'"))
 		output = e2ekubectl.RunKubectlOrDie("default", "get", "svc", svcName, "-o=jsonpath='{.spec.sessionAffinityConfig.clientIP.timeoutSeconds}'")
-		framework.ExpectEqual(output, "'10800'")
+		gomega.Expect(output).To(gomega.Equal("'10800'"))
 		time.Sleep(time.Second * 5) // buffer to ensure all rules are created correctly
 
 		ginkgo.By("by sending a UDP packet to service " + svcName + " with type=LoadBalancer in namespace " + namespaceName + " with backend pod " + backendName)

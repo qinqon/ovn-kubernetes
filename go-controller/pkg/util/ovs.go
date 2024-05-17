@@ -13,7 +13,6 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/spf13/afero"
 
 	"k8s.io/klog/v2"
@@ -46,8 +45,8 @@ const (
 )
 
 const (
-	nbdbCtlSock     = "ovnnb_db.ctl"
-	sbdbCtlSock     = "ovnsb_db.ctl"
+	nbdbCtlFileName = "ovnnb_db.ctl"
+	sbdbCtlFileName = "ovnsb_db.ctl"
 	OvnNbdbLocation = "/etc/ovn/ovnnb_db.db"
 	OvnSbdbLocation = "/etc/ovn/ovnsb_db.db"
 	FloodAction     = "FLOOD"
@@ -72,10 +71,6 @@ func PrepareTestConfig() {
 	ovsRunDir = savedOVSRunDir
 	ovnRunDir = savedOVNRunDir
 }
-
-// this metric is set only for the ovnkube in master mode since 99.9% of
-// all the ovn-nbctl/ovn-sbctl calls occur on the master
-var MetricOvnCliLatency *prometheus.HistogramVec
 
 func runningPlatform() (string, error) {
 	if runtime.GOOS == windowsOS {
@@ -424,11 +419,7 @@ func RunOVNNbctlWithTimeout(timeout int, args ...string) (string, string, error)
 // FIXME: Remove when https://github.com/ovn-org/libovsdb/issues/235 is fixed
 func RunOVNNbctlRawOutput(timeout int, args ...string) (string, string, error) {
 	cmdArgs, envVars := getNbctlArgsAndEnv(timeout, args...)
-	start := time.Now()
 	stdout, stderr, err := runOVNretry(runner.nbctlPath, envVars, cmdArgs...)
-	if MetricOvnCliLatency != nil {
-		MetricOvnCliLatency.WithLabelValues("ovn-nbctl").Observe(time.Since(start).Seconds())
-	}
 	return stdout.String(), stderr.String(), err
 }
 
@@ -459,11 +450,7 @@ func RunOVNSbctlWithTimeout(timeout int, args ...string) (string, string,
 	cmdArgs = append(cmdArgs, fmt.Sprintf("--timeout=%d", timeout))
 	cmdArgs = append(cmdArgs, "--no-leader-only")
 	cmdArgs = append(cmdArgs, args...)
-	start := time.Now()
 	stdout, stderr, err := runOVNretry(runner.sbctlPath, nil, cmdArgs...)
-	if MetricOvnCliLatency != nil {
-		MetricOvnCliLatency.WithLabelValues("ovn-sbctl").Observe(time.Since(start).Seconds())
-	}
 	return strings.Trim(strings.TrimSpace(stdout.String()), "\""), stderr.String(), err
 }
 
@@ -499,12 +486,12 @@ func RunOVNNBAppCtlWithTimeout(timeout int, args ...string) (string, string, err
 	return RunOVNNBAppCtl(cmdArgs...)
 }
 
-// RunOVNNBAppCtl runs an 'ovn-appctl -t nbdbCtlSockPath command'.
+// RunOVNNBAppCtl runs an 'ovn-appctl -t nbdbCtlFileName command'.
 func RunOVNNBAppCtl(args ...string) (string, string, error) {
 	var cmdArgs []string
 	cmdArgs = []string{
 		"-t",
-		runner.ovnRunDir + nbdbCtlSock,
+		runner.ovnRunDir + nbdbCtlFileName,
 	}
 	cmdArgs = append(cmdArgs, args...)
 	stdout, stderr, err := runOVNretry(runner.ovnappctlPath, nil, cmdArgs...)
@@ -518,12 +505,12 @@ func RunOVNSBAppCtlWithTimeout(timeout int, args ...string) (string, string, err
 	return RunOVNSBAppCtl(cmdArgs...)
 }
 
-// RunOVNSBAppCtl runs an 'ovn-appctl -t sbdbCtlSockPath command'.
+// RunOVNSBAppCtl runs an 'ovn-appctl -t sbdbCtlFileName command'.
 func RunOVNSBAppCtl(args ...string) (string, string, error) {
 	var cmdArgs []string
 	cmdArgs = []string{
 		"-t",
-		runner.ovnRunDir + sbdbCtlSock,
+		runner.ovnRunDir + sbdbCtlFileName,
 	}
 	cmdArgs = append(cmdArgs, args...)
 	stdout, stderr, err := runOVNretry(runner.ovnappctlPath, nil, cmdArgs...)

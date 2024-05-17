@@ -90,6 +90,8 @@ OVNKUBE_METRICS_SCALE_ENABLE=
 OVN_STATELESS_NETPOL_ENABLE="false"
 OVN_ENABLE_INTERCONNECT=
 OVN_ENABLE_OVNKUBE_IDENTITY="true"
+OVN_ENABLE_PERSISTENT_IPS=
+OVN_ENABLE_SVC_TEMPLATE_SUPPORT="true"
 # IN_UPGRADE is true only if called by upgrade-ovn.sh during the upgrade test,
 # it will render only the parts in ovn-setup.yaml related to RBAC permissions.
 IN_UPGRADE=
@@ -338,6 +340,12 @@ while [ "$1" != "" ]; do
   --ovn-northd-backoff-interval)
     OVN_NORTHD_BACKOFF_INTERVAL=$VALUE
     ;;
+  --enable-persistent-ips)
+    OVN_ENABLE_PERSISTENT_IPS=$VALUE
+    ;;
+  --enable-svc-template-support)
+    OVN_ENABLE_SVC_TEMPLATE_SUPPORT=$VALUE
+    ;;
   *)
     echo "WARNING: unknown parameter \"$PARAM\""
     exit 1
@@ -516,6 +524,12 @@ echo "ovn_enable_ovnkube_identity: ${ovn_enable_ovnkube_identity}"
 
 ovn_northd_backoff_interval=${OVN_NORTHD_BACKOFF_INTERVAL}
 echo "ovn_northd_backoff_interval: ${ovn_northd_backoff_interval}"
+
+ovn_enable_persistent_ips=${OVN_ENABLE_PERSISTENT_IPS}
+echo "ovn_enable_persistent_ips: ${ovn_enable_persistent_ips}"
+
+ovn_enable_svc_template_support=${OVN_ENABLE_SVC_TEMPLATE_SUPPORT}
+echo "ovn_enable_svc_template_support: ${ovn_enable_svc_template_support}"
 
 ovn_image=${ovnkube_image} \
   ovnkube_compact_mode_enable=${ovnkube_compact_mode_enable} \
@@ -700,6 +714,8 @@ ovn_image=${ovnkube_image} \
   ovn_unprivileged_mode=${ovn_unprivileged_mode} \
   ovn_enable_multi_external_gateway=${ovn_enable_multi_external_gateway} \
   ovn_enable_ovnkube_identity=${ovn_enable_ovnkube_identity} \
+  ovn_enable_persistent_ips=${ovn_enable_persistent_ips} \
+  ovn_enable_svc_template_support=${ovn_enable_svc_template_support} \
   jinjanate ../templates/ovnkube-master.yaml.j2 -o ${output_dir}/ovnkube-master.yaml
 
 ovn_image=${ovnkube_image} \
@@ -738,6 +754,7 @@ ovn_image=${ovnkube_image} \
   ovn_enable_ovnkube_identity=${ovn_enable_ovnkube_identity} \
   ovn_v4_transit_switch_subnet=${ovn_v4_transit_switch_subnet} \
   ovn_v6_transit_switch_subnet=${ovn_v6_transit_switch_subnet} \
+  ovn_enable_persistent_ips=${ovn_enable_persistent_ips} \
   jinjanate ../templates/ovnkube-control-plane.yaml.j2 -o ${output_dir}/ovnkube-control-plane.yaml
 
 ovn_image=${image} \
@@ -827,6 +844,8 @@ ovn_image=${ovnkube_image} \
   ovn_enable_multi_external_gateway=${ovn_enable_multi_external_gateway} \
   ovn_enable_ovnkube_identity=${ovn_enable_ovnkube_identity} \
   ovn_northd_backoff_interval=${ovn_northd_backoff_interval} \
+  ovn_enable_persistent_ips=${ovn_enable_persistent_ips} \
+  ovn_enable_svc_template_support=${ovn_enable_svc_template_support} \
   jinjanate ../templates/ovnkube-single-node-zone.yaml.j2 -o ${output_dir}/ovnkube-single-node-zone.yaml
 
 ovn_image=${ovnkube_image} \
@@ -884,6 +903,8 @@ ovn_image=${ovnkube_image} \
   ovn_enable_multi_external_gateway=${ovn_enable_multi_external_gateway} \
   ovn_enable_ovnkube_identity=${ovn_enable_ovnkube_identity} \
   ovn_northd_backoff_interval=${ovn_enable_backoff_interval} \
+  ovn_enable_persistent_ips=${ovn_enable_persistent_ips} \
+  ovn_enable_svc_template_support=${ovn_enable_svc_template_support} \
   jinjanate ../templates/ovnkube-zone-controller.yaml.j2 -o ${output_dir}/ovnkube-zone-controller.yaml
 
 ovn_image=${image} \
@@ -955,7 +976,5 @@ cp ../templates/k8s.ovn.org_egressips.yaml.j2 ${output_dir}/k8s.ovn.org_egressip
 cp ../templates/k8s.ovn.org_egressqoses.yaml.j2 ${output_dir}/k8s.ovn.org_egressqoses.yaml
 cp ../templates/k8s.ovn.org_egressservices.yaml.j2 ${output_dir}/k8s.ovn.org_egressservices.yaml
 cp ../templates/k8s.ovn.org_adminpolicybasedexternalroutes.yaml.j2 ${output_dir}/k8s.ovn.org_adminpolicybasedexternalroutes.yaml
-cp ../templates/policy.networking.k8s.io_adminnetworkpolicies.yaml ${output_dir}/policy.networking.k8s.io_adminnetworkpolicies.yaml
-cp ../templates/policy.networking.k8s.io_baselineadminnetworkpolicies.yaml ${output_dir}/policy.networking.k8s.io_baselineadminnetworkpolicies.yaml
 
 exit 0

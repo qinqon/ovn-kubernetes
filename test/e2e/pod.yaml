@@ -1,0 +1,44 @@
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  annotations:
+    k8s.v1.cni.cncf.io/networks: '[
+      {
+        "name": "l2-network"
+      }
+    ]'
+  name: tinypod-ovn-worker
+spec:
+  nodeSelector:
+    kubernetes.io/hostname: ovn-worker
+  containers:
+  - args: ["bash", "-c", "ip l set down eth0 && ip route add default via 10.100.200.1 && ip -6 route add default via 2010:100:200::1 && sleep infinity"]
+    image: quay.io/fedora/fedora-toolbox
+    imagePullPolicy: IfNotPresent
+    name: agnhost-container
+    securityContext:
+      capabilities:
+        add: ["NET_ADMIN"]
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  annotations:
+    k8s.v1.cni.cncf.io/networks: '[
+      {
+        "name": "l2-network"
+      }
+    ]'
+  name: tinypod-ovn-worker2
+spec:
+  nodeSelector:
+    kubernetes.io/hostname: ovn-worker2
+  containers:
+  - args: ["bash", "-c", "ip l set down eth0 && ip route add default via 10.100.200.1 && ip -6 route add default via 2010:100:200::1 && sleep infinity"]
+    image: quay.io/fedora/fedora-toolbox
+    imagePullPolicy: IfNotPresent
+    name: agnhost-container
+    securityContext:
+      capabilities:
+        add: ["NET_ADMIN"]

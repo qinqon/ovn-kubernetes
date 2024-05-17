@@ -73,11 +73,11 @@ func (c *Controller) syncBaselineAdminNetworkPolicy(key string) error {
 	err = c.ensureBaselineAdminNetworkPolicy(banp)
 	if err != nil {
 		// we can ignore the error if status update doesn't succeed; best effort
-		_ = c.updateBANPStatusToNotReady(banp, c.zone, err.Error())
+		_ = c.updateBANPStatusToNotReady(banp.Name, err.Error())
 		return err
 	}
 	// we can ignore the error if status update doesn't succeed; best effort
-	_ = c.updateBANPStatusToReady(banp, c.zone)
+	_ = c.updateBANPStatusToReady(banp.Name)
 	return nil
 }
 
@@ -94,11 +94,11 @@ func (c *Controller) clearBaselineAdminNetworkPolicy(banpName string) error {
 
 	// clear NBDB objects for the given BANP (PG, ACLs on that PG, AddrSets used by the ACLs)
 	// remove PG for Subject (ACLs will get cleaned up automatically)
-	portGroupName, readableGroupName := getAdminNetworkPolicyPGName(banp.name, true)
+	portGroupName := c.getANPPortGroupName(banp.name, true)
 	// no need to batch this with address-set deletes since this itself will contain a bunch of ACLs that need to be deleted which is heavy enough.
 	err := libovsdbops.DeletePortGroups(c.nbClient, portGroupName)
 	if err != nil {
-		return fmt.Errorf("unable to delete PG %s for BANP %s: %w", readableGroupName, banp.name, err)
+		return fmt.Errorf("unable to delete PG %s for BANP %s: %w", portGroupName, banp.name, err)
 	}
 	// remove address-sets that were created for the peers of each rule fpr the whole ANP
 	// do this after ACLs are gone so that there is no lingering references
@@ -127,14 +127,14 @@ func (c *Controller) ensureBaselineAdminNetworkPolicy(banp *anpapi.BaselineAdmin
 	// 1) Construct Port Group name using ANP name
 	// 2) Construct Address-sets with IPs of the peers in the rules
 	// 3) Construct ACLs using AS-es and PGs
-	portGroupName, _ := getAdminNetworkPolicyPGName(desiredBANPState.name, true)
+	portGroupName := c.getANPPortGroupName(desiredBANPState.name, true)
 	desiredPorts, err := c.convertANPSubjectToLSPs(desiredBANPState.subject)
 	if err != nil {
 		return fmt.Errorf("unable to fetch ports for banp %s: %v", desiredBANPState.name, err)
 	}
-	err = c.convertANPPeersToIPs(desiredBANPState)
+	err = c.expandANPRulePeers(desiredBANPState)
 	if err != nil {
-		return fmt.Errorf("unable to build IPsets for banp %s: %v", desiredBANPState.name, err)
+		return fmt.Errorf("unable to convert peers to addresses for banp %s: %v", desiredBANPState.name, err)
 	}
 	atLeastOneRuleUpdated := false
 	desiredACLs := c.convertANPRulesToACLs(desiredBANPState, currentBANPState, portGroupName, &atLeastOneRuleUpdated, true)

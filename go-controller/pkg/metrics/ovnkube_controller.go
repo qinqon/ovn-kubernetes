@@ -17,6 +17,7 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kube"
 	libovsdbops "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdb/ops"
+	libovsdbutil "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdb/util"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/nbdb"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/sbdb"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
@@ -60,17 +61,6 @@ var metricPodCreationLatency = prometheus.NewHistogram(prometheus.HistogramOpts{
 	Help:      "The duration between a pod being scheduled and completing its logical switch port configuration",
 	Buckets:   prometheus.ExponentialBuckets(.1, 2, 15),
 })
-
-// metricOvnCliLatency is the duration to execute OVN commands using CLI tools ovn-nbctl or ovn-sbctl.
-var metricOvnCliLatency = prometheus.NewHistogramVec(prometheus.HistogramOpts{
-	Namespace: MetricOvnkubeNamespace,
-	Subsystem: MetricOvnkubeSubsystemController,
-	Name:      "ovn_cli_latency_seconds",
-	Help:      "The latency of various OVN commands. Currently, ovn-nbctl and ovn-sbctl",
-	Buckets:   prometheus.ExponentialBuckets(.1, 2, 15)},
-	// labels
-	[]string{"command"},
-)
 
 // MetricResourceUpdateCount is the number of times a particular resource's UpdateFunc has been called.
 var MetricResourceUpdateCount = prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -164,6 +154,16 @@ var MetricOVNKubeControllerLeader = prometheus.NewGauge(prometheus.GaugeOpts{
 	Name:      "leader",
 	Help:      "Identifies whether the instance of ovnkube-controller is a leader(1) or not(0).",
 })
+
+var metricOvnKubeControllerLogFileSize = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+	Namespace: MetricOvnkubeNamespace,
+	Subsystem: MetricOvnkubeSubsystemController,
+	Name:      "logfile_size_bytes",
+	Help:      "The size of ovnkube-controller log file."},
+	[]string{
+		"logfile_name",
+	},
+)
 
 var metricEgressIPAssignLatency = prometheus.NewHistogram(prometheus.HistogramOpts{
 	Namespace: MetricOvnkubeNamespace,
@@ -273,16 +273,36 @@ var metricEgressFirewallCount = prometheus.NewGauge(prometheus.GaugeOpts{
 var metricANPCount = prometheus.NewGauge(prometheus.GaugeOpts{
 	Namespace: MetricOvnkubeNamespace,
 	Subsystem: MetricOvnkubeSubsystemController,
-	Name:      "admin_network_policy_custom_resource_total",
+	Name:      "admin_network_policies",
 	Help:      "The total number of admin network policies in the cluster",
 })
 
 var metricBANPCount = prometheus.NewGauge(prometheus.GaugeOpts{
 	Namespace: MetricOvnkubeNamespace,
 	Subsystem: MetricOvnkubeSubsystemController,
-	Name:      "baseline_admin_network_policy_custom_resource_total",
-	Help:      "The total number of baseline admin network policies (0 or 1) in the cluster",
+	Name:      "baseline_admin_network_policies",
+	Help:      "The total number of baseline admin network policies in the cluster",
 })
+
+var metricANPDBObjects = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+	Namespace: MetricOvnkubeNamespace,
+	Subsystem: MetricOvnkubeSubsystemController,
+	Name:      "admin_network_policies_db_objects",
+	Help:      "The total number of OVN NBDB objects (table_name) owned by AdminNetworkPolicy controller in the cluster"},
+	[]string{
+		"table_name",
+	},
+)
+
+var metricBANPDBObjects = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+	Namespace: MetricOvnkubeNamespace,
+	Subsystem: MetricOvnkubeSubsystemController,
+	Name:      "baseline_admin_network_policies_db_objects",
+	Help:      "The total number of OVN NBDB objects (table_name) owned by BaselineAdminNetworkPolicy controller in the cluster"},
+	[]string{
+		"table_name",
+	},
+)
 
 /** AdminNetworkPolicyMetrics End**/
 
@@ -388,9 +408,6 @@ func RegisterOVNKubeControllerPerformance(nbClient libovsdbclient.Client) {
 	prometheus.MustRegister(MetricRequeueServiceCount)
 	prometheus.MustRegister(MetricSyncServiceCount)
 	prometheus.MustRegister(MetricSyncServiceLatency)
-	prometheus.MustRegister(metricOvnCliLatency)
-	// This is set to not create circular import between metrics and util package
-	util.MetricOvnCliLatency = metricOvnCliLatency
 	registerWorkqueueMetrics(MetricOvnkubeNamespace, MetricOvnkubeSubsystemController)
 	prometheus.MustRegister(prometheus.NewGaugeFunc(
 		prometheus.GaugeOpts{
@@ -407,7 +424,7 @@ func RegisterOVNKubeControllerPerformance(nbClient libovsdbclient.Client) {
 
 // RegisterOVNKubeControllerFunctional is a collection of metrics that help us understand ovnkube-controller functions. Call once after
 // LE is won.
-func RegisterOVNKubeControllerFunctional() {
+func RegisterOVNKubeControllerFunctional(stopChan <-chan struct{}) {
 	// No need to unregister because process exits when leadership is lost.
 	if config.Metrics.EnableScaleMetrics {
 		klog.Infof("Scale metrics are enabled")
@@ -429,6 +446,48 @@ func RegisterOVNKubeControllerFunctional() {
 		if _, ok := err.(prometheus.AlreadyRegisteredError); !ok {
 			panic(err)
 		}
+	}
+	// ovnkube-controller logfile size metric
+	prometheus.MustRegister(metricOvnKubeControllerLogFileSize)
+	go ovnKubeLogFileSizeMetricsUpdater(metricOvnKubeControllerLogFileSize, stopChan)
+}
+
+func registerOVNKubeFeatureDBObjectsMetrics() {
+	prometheus.MustRegister(metricANPDBObjects)
+	prometheus.MustRegister(metricBANPDBObjects)
+}
+
+func RunOVNKubeFeatureDBObjectsMetricsUpdater(ovnNBClient libovsdbclient.Client, controllerName string, tickPeriod time.Duration, stopChan <-chan struct{}) {
+	registerOVNKubeFeatureDBObjectsMetrics()
+	go func() {
+		ticker := time.NewTicker(tickPeriod)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				updateOVNKubeFeatureNBDBObjectMetrics(ovnNBClient, controllerName)
+			case <-stopChan:
+				return
+			}
+		}
+	}()
+}
+
+func updateOVNKubeFeatureNBDBObjectMetrics(ovnNBClient libovsdbclient.Client, controllerName string) {
+	if config.OVNKubernetesFeature.EnableAdminNetworkPolicy {
+		// ANP Feature
+		// 1. ACL 2. AddressSet (TODO: Add PG once indexing is done)
+		aclCount := libovsdbutil.GetACLCount(ovnNBClient, libovsdbops.ACLAdminNetworkPolicy, controllerName)
+		metricANPDBObjects.WithLabelValues(nbdb.ACLTable).Set(float64(aclCount))
+		addressSetCount := libovsdbutil.GetAddressSetCount(ovnNBClient, libovsdbops.AddressSetAdminNetworkPolicy, controllerName)
+		metricANPDBObjects.WithLabelValues(nbdb.AddressSetTable).Set(float64(addressSetCount))
+
+		// BANP Feature
+		// 1. ACL 2. AddressSet (TODO: Add PG once indexing is done)
+		aclCount = libovsdbutil.GetACLCount(ovnNBClient, libovsdbops.ACLBaselineAdminNetworkPolicy, controllerName)
+		metricBANPDBObjects.WithLabelValues(nbdb.ACLTable).Set(float64(aclCount))
+		addressSetCount = libovsdbutil.GetAddressSetCount(ovnNBClient, libovsdbops.AddressSetBaselineAdminNetworkPolicy, controllerName)
+		metricBANPDBObjects.WithLabelValues(nbdb.AddressSetTable).Set(float64(addressSetCount))
 	}
 }
 

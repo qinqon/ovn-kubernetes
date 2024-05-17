@@ -44,8 +44,9 @@ func (oc *DefaultNetworkController) SetupMaster(existingNodeNames []string) erro
 	}
 	oc.defaultCOPPUUID = *(logicalRouter.Copp)
 
+	pgIDs := oc.getClusterPortGroupDbIDs(types.ClusterPortGroupNameBase)
 	pg := &nbdb.PortGroup{
-		Name: types.ClusterPortGroupNameBase,
+		Name: libovsdbutil.GetPortGroupName(pgIDs),
 	}
 	pg, err = libovsdbops.GetPortGroup(oc.nbClient, pg)
 	if err != nil && !errors.Is(err, libovsdbclient.ErrNotFound) {
@@ -54,7 +55,7 @@ func (oc *DefaultNetworkController) SetupMaster(existingNodeNames []string) erro
 	if pg == nil {
 		// we didn't find an existing clusterPG, let's create a new empty PG (fresh cluster install)
 		// Create a cluster-wide port group that all logical switch ports are part of
-		pg := oc.buildPortGroup(types.ClusterPortGroupNameBase, types.ClusterPortGroupNameBase, nil, nil)
+		pg := libovsdbutil.BuildPortGroup(pgIDs, nil, nil)
 		err = libovsdbops.CreateOrUpdatePortGroups(oc.nbClient, pg)
 		if err != nil {
 			klog.Errorf("Failed to create cluster port group: %v", err)
@@ -62,8 +63,9 @@ func (oc *DefaultNetworkController) SetupMaster(existingNodeNames []string) erro
 		}
 	}
 
+	pgIDs = oc.getClusterPortGroupDbIDs(types.ClusterRtrPortGroupNameBase)
 	pg = &nbdb.PortGroup{
-		Name: types.ClusterRtrPortGroupNameBase,
+		Name: libovsdbutil.GetPortGroupName(pgIDs),
 	}
 	pg, err = libovsdbops.GetPortGroup(oc.nbClient, pg)
 	if err != nil && !errors.Is(err, libovsdbclient.ErrNotFound) {
@@ -74,7 +76,7 @@ func (oc *DefaultNetworkController) SetupMaster(existingNodeNames []string) erro
 		// Create a cluster-wide port group with all node-to-cluster router
 		// logical switch ports. Currently the only user is multicast but it might
 		// be used for other features in the future.
-		pg = oc.buildPortGroup(types.ClusterRtrPortGroupNameBase, types.ClusterRtrPortGroupNameBase, nil, nil)
+		pg = libovsdbutil.BuildPortGroup(pgIDs, nil, nil)
 		err = libovsdbops.CreateOrUpdatePortGroups(oc.nbClient, pg)
 		if err != nil {
 			klog.Errorf("Failed to create cluster port group: %v", err)
@@ -208,7 +210,7 @@ func (oc *DefaultNetworkController) syncNodeManagementPort(node *kapi.Node, host
 		return err
 	}
 
-	err = libovsdbops.AddPortsToPortGroup(oc.nbClient, types.ClusterPortGroupNameBase, logicalSwitchPort.UUID)
+	err = libovsdbops.AddPortsToPortGroup(oc.nbClient, oc.getClusterPortGroupName(types.ClusterPortGroupNameBase), logicalSwitchPort.UUID)
 	if err != nil {
 		klog.Errorf(err.Error())
 		return err
@@ -221,45 +223,6 @@ func (oc *DefaultNetworkController) syncNodeManagementPort(node *kapi.Node, host
 	}
 
 	return nil
-}
-
-func (oc *DefaultNetworkController) syncGatewayLogicalNetwork(node *kapi.Node, l3GatewayConfig *util.L3GatewayConfig,
-	hostSubnets []*net.IPNet, hostAddrs []string) error {
-	var err error
-	var gwLRPIPs, clusterSubnets []*net.IPNet
-	for _, clusterSubnet := range config.Default.ClusterSubnets {
-		clusterSubnets = append(clusterSubnets, clusterSubnet.CIDR)
-	}
-
-	gwLRPIPs, err = util.ParseNodeGatewayRouterLRPAddrs(node)
-	if err != nil {
-		return fmt.Errorf("failed to get join switch port IP address for node %s: %v", node.Name, err)
-	}
-
-	enableGatewayMTU := util.ParseNodeGatewayMTUSupport(node)
-
-	err = oc.gatewayInit(node.Name, clusterSubnets, hostSubnets, l3GatewayConfig, oc.SCTPSupport, gwLRPIPs, oc.ovnClusterLRPToJoinIfAddrs,
-		enableGatewayMTU)
-	if err != nil {
-		return fmt.Errorf("failed to init shared interface gateway: %v", err)
-	}
-
-	for _, subnet := range hostSubnets {
-		hostIfAddr := util.GetNodeManagementIfAddr(subnet)
-		l3GatewayConfigIP, err := util.MatchFirstIPNetFamily(utilnet.IsIPv6(hostIfAddr.IP), l3GatewayConfig.IPAddresses)
-		if err != nil {
-			return err
-		}
-		relevantHostIPs, err := util.MatchAllIPStringFamily(utilnet.IsIPv6(hostIfAddr.IP), hostAddrs)
-		if err != nil && err != util.ErrorNoIP {
-			return err
-		}
-		if err := oc.addPolicyBasedRoutes(node.Name, hostIfAddr.IP.String(), l3GatewayConfigIP, relevantHostIPs); err != nil {
-			return err
-		}
-	}
-
-	return err
 }
 
 func (oc *DefaultNetworkController) addNode(node *kapi.Node) ([]*net.IPNet, error) {
@@ -361,7 +324,7 @@ func (oc *DefaultNetworkController) cleanupNodeResources(nodeName string) error 
 		return fmt.Errorf("error deleting node %s logical network: %v", nodeName, err)
 	}
 
-	if err := oc.gatewayCleanup(nodeName); err != nil {
+	if err := oc.gatewayCleanup(nodeName, types.OVNJoinSwitch); err != nil {
 		return fmt.Errorf("failed to clean up node %s gateway: (%w)", nodeName, err)
 	}
 
@@ -695,7 +658,22 @@ func (oc *DefaultNetworkController) addUpdateLocalNodeEvent(node *kapi.Node, nSy
 	}
 
 	if nSyncs.syncGw {
-		err := oc.syncNodeGateway(node, nil)
+		var clusterSubnets []*net.IPNet
+		for _, clusterSubnet := range config.Default.ClusterSubnets {
+			clusterSubnets = append(clusterSubnets, clusterSubnet.CIDR)
+		}
+
+		var gwLRPIPs []*net.IPNet
+
+		var err error
+		gwLRPIPs, err = util.ParseNodeGatewayRouterLRPAddrs(node)
+		if err != nil {
+			return fmt.Errorf("failed to get join switch port IP address for node %s: %v", node.Name, err)
+		}
+
+		gwLRPMAC := util.IPAddrToHWAddr(gwLRPIPs[0].IP)
+
+		err = oc.syncNodeGateway(node, gwLRPMAC.String(), gwLRPIPs, oc.ovnClusterLRPToJoinIfAddrs, clusterSubnets, nil, types.OVNJoinSwitch)
 		if err != nil {
 			errs = append(errs, err)
 			oc.gatewaysFailed.Store(node.Name, true)
@@ -831,34 +809,6 @@ func (oc *DefaultNetworkController) deleteOVNNodeEvent(node *kapi.Node) error {
 	return nil
 }
 
-// getOVNClusterRouterPortToJoinSwitchIPs returns the IP addresses for the
-// logical router port "GwRouterToJoinSwitchPrefix + OVNClusterRouter" from the
-// config.Gateway.V4JoinSubnet and  config.Gateway.V6JoinSubnet. This will
-// always be the first IP from these subnets.
-func (oc *DefaultNetworkController) getOVNClusterRouterPortToJoinSwitchIfAddrs() (gwLRPIPs []*net.IPNet, err error) {
-	joinSubnetsConfig := []string{}
-	if config.IPv4Mode {
-		joinSubnetsConfig = append(joinSubnetsConfig, config.Gateway.V4JoinSubnet)
-	}
-	if config.IPv6Mode {
-		joinSubnetsConfig = append(joinSubnetsConfig, config.Gateway.V6JoinSubnet)
-	}
-	for _, joinSubnetString := range joinSubnetsConfig {
-		_, joinSubnet, err := net.ParseCIDR(joinSubnetString)
-		if err != nil {
-			return nil, fmt.Errorf("error parsing join subnet string %s: %v", joinSubnetString, err)
-		}
-		joinSubnetBaseIP := utilnet.BigForIP(joinSubnet.IP)
-		ipnet := &net.IPNet{
-			IP:   utilnet.AddIPOffset(joinSubnetBaseIP, 1),
-			Mask: joinSubnet.Mask,
-		}
-		gwLRPIPs = append(gwLRPIPs, ipnet)
-	}
-
-	return gwLRPIPs, nil
-}
-
 // addUpdateHoNodeEvent reconsile ovn nodes when a hybrid overlay node is added.
 func (oc *DefaultNetworkController) addUpdateHoNodeEvent(node *kapi.Node) error {
 	if subnets, _ := util.ParseNodeHostSubnetAnnotation(node, types.DefaultNetworkName); len(subnets) > 0 {
@@ -925,7 +875,11 @@ func (oc *DefaultNetworkController) addIPToHostNetworkNamespaceAddrSet(node *kap
 
 	hostNetworkPolicyIPs, err := oc.getHostNamespaceAddressesForNode(node)
 	if err != nil {
-		return fmt.Errorf("error parsing annotation for node %s: %v", node.Name, err)
+		parsedErr := err
+		if !oc.isLocalZoneNode(node) {
+			parsedErr = types.NewSuppressedError(err)
+		}
+		return fmt.Errorf("error parsing annotation for node %s: %w", node.Name, parsedErr)
 	}
 
 	// add the host network IPs for this node to host network namespace's address set
@@ -937,7 +891,7 @@ func (oc *DefaultNetworkController) addIPToHostNetworkNamespaceAddrSet(node *kap
 				return fmt.Errorf("failed to ensure namespace locked: %v", err)
 			}
 			defer nsUnlock()
-			if err = nsInfo.addressSet.AddIPs(hostNetworkPolicyIPs); err != nil {
+			if err = nsInfo.addressSet.AddAddresses(util.StringSlice(hostNetworkPolicyIPs)); err != nil {
 				return err
 			}
 		}
@@ -957,6 +911,11 @@ func (oc *DefaultNetworkController) delIPFromHostNetworkNamespaceAddrSet(node *k
 
 	hostNetworkPolicyIPs, err := oc.getHostNamespaceAddressesForNode(node)
 	if err != nil {
+		if util.IsAnnotationNotSetError(err) {
+			// if annotation is not set for node subnet or node GW router LRP IP address, we can assume nothing was added to the
+			// host network namespace address set. We depend on both annotations to be set before configuring the address set.
+			return nil
+		}
 		return fmt.Errorf("error parsing annotation for node %s: %v", node.Name, err)
 	}
 
@@ -969,7 +928,7 @@ func (oc *DefaultNetworkController) delIPFromHostNetworkNamespaceAddrSet(node *k
 				return fmt.Errorf("failed to ensure namespace locked: %v", err)
 			}
 			defer nsUnlock()
-			if err = nsInfo.addressSet.DeleteIPs(hostNetworkPolicyIPs); err != nil {
+			if err = nsInfo.addressSet.DeleteAddresses(util.StringSlice(hostNetworkPolicyIPs)); err != nil {
 				return err
 			}
 		}

@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -16,10 +17,11 @@ import (
 	"github.com/pkg/errors"
 
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kubevirt"
 	libovsdbops "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdb/ops"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/metrics"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/nbdb"
-	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/node"
+	ovnnode "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/node"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/gateway"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
@@ -37,7 +39,7 @@ import (
 // NOTE2: egressIP SNATs are synced in EIP controller.
 // TODO (tssurya): Add support cleaning up even if disableSNATMultipleGWs=false, we'd need to remove the perPod
 // SNATs in case someone switches between these modes. See https://github.com/ovn-org/ovn-kubernetes/issues/3232
-func (oc *DefaultNetworkController) cleanupStalePodSNATs(nodeName string, nodeIPs []*net.IPNet) error {
+func (oc *BaseNetworkController) cleanupStalePodSNATs(nodeName string, nodeIPs []*net.IPNet) error {
 	if !config.Gateway.DisableSNATMultipleGWs {
 		return nil
 	}
@@ -110,9 +112,9 @@ func (oc *DefaultNetworkController) cleanupStalePodSNATs(nodeName string, nodeIP
 
 // gatewayInit creates a gateway router for the local chassis.
 // enableGatewayMTU enables options:gateway_mtu for gateway routers.
-func (oc *DefaultNetworkController) gatewayInit(nodeName string, clusterIPSubnet []*net.IPNet, hostSubnets []*net.IPNet,
-	l3GatewayConfig *util.L3GatewayConfig, sctpSupport bool, gwLRPIfAddrs, drLRPIfAddrs []*net.IPNet,
-	enableGatewayMTU bool) error {
+func (oc *BaseNetworkController) gatewayInit(node *corev1.Node, clusterIPSubnet []*net.IPNet, hostSubnets []*net.IPNet,
+	l3GatewayConfig *util.L3GatewayConfig, sctpSupport bool, gwLRPMAC string, gwLRPIfAddrs, drLRPIfAddrs []*net.IPNet,
+	enableGatewayMTU bool, joinSwitchName string) error {
 
 	gwLRPIPs := make([]net.IP, 0)
 	for _, gwLRPIfAddr := range gwLRPIfAddrs {
@@ -120,7 +122,7 @@ func (oc *DefaultNetworkController) gatewayInit(nodeName string, clusterIPSubnet
 	}
 
 	// Create a gateway router.
-	gatewayRouter := types.GWRouterPrefix + nodeName
+	gatewayRouter := types.GWRouterPrefix + oc.GetNetworkScopedName(node.Name)
 	physicalIPs := make([]string, len(l3GatewayConfig.IPAddresses))
 	for i, ip := range l3GatewayConfig.IPAddresses {
 		physicalIPs[i] = ip.IP.String()
@@ -188,15 +190,15 @@ func (oc *DefaultNetworkController) gatewayInit(nodeName string, clusterIPSubnet
 		Addresses: []string{"router"},
 		Options: map[string]string{
 			"router-port": gwRouterPort,
+			"arp_proxy":   kubevirt.ComposeARPProxyLSPOption(),
 		},
 	}
-	sw := nbdb.LogicalSwitch{Name: types.OVNJoinSwitch}
+	sw := nbdb.LogicalSwitch{Name: joinSwitchName}
 	err = libovsdbops.CreateOrUpdateLogicalSwitchPortsOnSwitch(oc.nbClient, &sw, &logicalSwitchPort)
 	if err != nil {
 		return fmt.Errorf("failed to create port %v on logical switch %q: %v", gwSwitchPort, types.OVNJoinSwitch, err)
 	}
 
-	gwLRPMAC := util.IPAddrToHWAddr(gwLRPIPs[0])
 	gwLRPNetworks := []string{}
 	for _, gwLRPIfAddr := range gwLRPIfAddrs {
 		gwLRPNetworks = append(gwLRPNetworks, gwLRPIfAddr.String())
@@ -210,7 +212,7 @@ func (oc *DefaultNetworkController) gatewayInit(nodeName string, clusterIPSubnet
 	}
 	logicalRouterPort := nbdb.LogicalRouterPort{
 		Name:     gwRouterPort,
-		MAC:      gwLRPMAC.String(),
+		MAC:      gwLRPMAC,
 		Networks: gwLRPNetworks,
 		Options:  options,
 	}
@@ -260,7 +262,7 @@ func (oc *DefaultNetworkController) gatewayInit(nodeName string, clusterIPSubnet
 
 	if err := oc.addExternalSwitch("",
 		l3GatewayConfig.InterfaceID,
-		nodeName,
+		node.Name,
 		gatewayRouter,
 		l3GatewayConfig.MACAddress.String(),
 		types.PhysicalNetworkName,
@@ -272,7 +274,7 @@ func (oc *DefaultNetworkController) gatewayInit(nodeName string, clusterIPSubnet
 	if l3GatewayConfig.EgressGWInterfaceID != "" {
 		if err := oc.addExternalSwitch(types.EgressGWSwitchPrefix,
 			l3GatewayConfig.EgressGWInterfaceID,
-			nodeName,
+			node.Name,
 			gatewayRouter,
 			l3GatewayConfig.EgressGWMACAddress.String(),
 			types.PhysicalNetworkExGwName,
@@ -286,11 +288,11 @@ func (oc *DefaultNetworkController) gatewayInit(nodeName string, clusterIPSubnet
 
 	nextHops := l3GatewayConfig.NextHops
 
-	if err := gateway.CreateDummyGWMacBindings(oc.nbClient, nodeName); err != nil {
+	if err := gateway.CreateDummyGWMacBindings(oc.nbClient, node.Name); err != nil {
 		return err
 	}
 
-	for _, nextHop := range node.DummyNextHopIPs() {
+	for _, nextHop := range ovnnode.DummyNextHopIPs() {
 		// Add return service route for OVN back to host
 		prefix := config.Gateway.V4MasqueradeSubnet
 		if utilnet.IsIPv6(nextHop) {
@@ -337,71 +339,73 @@ func (oc *DefaultNetworkController) gatewayInit(nodeName string, clusterIPSubnet
 		}
 	}
 
-	// We need to add a route to the Gateway router's IP, on the
-	// cluster router, to ensure that the return traffic goes back
-	// to the same gateway router
-	//
-	// This can be removed once https://bugzilla.redhat.com/show_bug.cgi?id=1891516 is fixed.
-	// FIXME(trozet): if LRP IP is changed, we do not remove stale instances of these routes
-	for _, gwLRPIP := range gwLRPIPs {
-		lrsr := nbdb.LogicalRouterStaticRoute{
-			IPPrefix: gwLRPIP.String(),
-			Nexthop:  gwLRPIP.String(),
-		}
-		p := func(item *nbdb.LogicalRouterStaticRoute) bool {
-			return item.IPPrefix == lrsr.IPPrefix &&
-				libovsdbops.PolicyEqualPredicate(lrsr.Policy, item.Policy)
-		}
-		err := libovsdbops.CreateOrReplaceLogicalRouterStaticRouteWithPredicate(oc.nbClient,
-			types.OVNClusterRouter, &lrsr, p, &lrsr.Nexthop)
-		if err != nil {
-			return fmt.Errorf("error creating static route %+v in %s: %v", lrsr, types.OVNClusterRouter, err)
-		}
-	}
-
-	// Add source IP address based routes in distributed router
-	// for this gateway router.
-	for _, hostSubnet := range hostSubnets {
-		gwLRPIP, err := util.MatchIPFamily(utilnet.IsIPv6CIDR(hostSubnet), gwLRPIPs)
-		if err != nil {
-			return fmt.Errorf("failed to add source IP address based "+
-				"routes in distributed router %s: %v",
-				types.OVNClusterRouter, err)
-		}
-
-		lrsr := nbdb.LogicalRouterStaticRoute{
-			Policy:   &nbdb.LogicalRouterStaticRoutePolicySrcIP,
-			IPPrefix: hostSubnet.String(),
-			Nexthop:  gwLRPIP[0].String(),
-		}
-
-		if config.Gateway.Mode != config.GatewayModeLocal {
+	if joinSwitchName == types.OVNJoinSwitch {
+		// We need to add a route to the Gateway router's IP, on the
+		// cluster router, to ensure that the return traffic goes back
+		// to the same gateway router
+		//
+		// This can be removed once https://bugzilla.redhat.com/show_bug.cgi?id=1891516 is fixed.
+		// FIXME(trozet): if LRP IP is changed, we do not remove stale instances of these routes
+		for _, gwLRPIP := range gwLRPIPs {
+			lrsr := nbdb.LogicalRouterStaticRoute{
+				IPPrefix: gwLRPIP.String(),
+				Nexthop:  gwLRPIP.String(),
+			}
 			p := func(item *nbdb.LogicalRouterStaticRoute) bool {
-				return item.IPPrefix == lrsr.IPPrefix && libovsdbops.PolicyEqualPredicate(lrsr.Policy, item.Policy)
+				return item.IPPrefix == lrsr.IPPrefix &&
+					libovsdbops.PolicyEqualPredicate(lrsr.Policy, item.Policy)
 			}
-			// If migrating from local to shared gateway, let's remove the static routes towards
-			// management port interface for the hostSubnet prefix before adding the routes
-			// towards join switch.
-			mgmtIfAddr := util.GetNodeManagementIfAddr(hostSubnet)
-			oc.staticRouteCleanup([]net.IP{mgmtIfAddr.IP})
-
-			err := libovsdbops.CreateOrReplaceLogicalRouterStaticRouteWithPredicate(oc.nbClient, types.OVNClusterRouter,
-				&lrsr, p, &lrsr.Nexthop)
+			err := libovsdbops.CreateOrReplaceLogicalRouterStaticRouteWithPredicate(oc.nbClient,
+				types.OVNClusterRouter, &lrsr, p, &lrsr.Nexthop)
 			if err != nil {
-				return fmt.Errorf("error creating static route %+v in GR %s: %v", lrsr, types.OVNClusterRouter, err)
+				return fmt.Errorf("error creating static route %+v in %s: %v", lrsr, types.OVNClusterRouter, err)
 			}
-		} else if config.Gateway.Mode == config.GatewayModeLocal {
-			// If migrating from shared to local gateway, let's remove the static routes towards
-			// join switch for the hostSubnet prefix
-			// Note syncManagementPort happens before gateway sync so only remove things pointing to join subnet
+		}
 
-			p := func(item *nbdb.LogicalRouterStaticRoute) bool {
-				return item.IPPrefix == lrsr.IPPrefix && item.Policy != nil && *item.Policy == *lrsr.Policy &&
-					config.ContainsJoinIP(net.ParseIP(item.Nexthop))
-			}
-			err := libovsdbops.DeleteLogicalRouterStaticRoutesWithPredicate(oc.nbClient, types.OVNClusterRouter, p)
+		// Add source IP address based routes in distributed router
+		// for this gateway router.
+		for _, hostSubnet := range hostSubnets {
+			gwLRPIP, err := util.MatchIPFamily(utilnet.IsIPv6CIDR(hostSubnet), gwLRPIPs)
 			if err != nil {
-				return fmt.Errorf("error deleting static route %+v in GR %s: %v", lrsr, types.OVNClusterRouter, err)
+				return fmt.Errorf("failed to add source IP address based "+
+					"routes in distributed router %s: %v",
+					types.OVNClusterRouter, err)
+			}
+
+			lrsr := nbdb.LogicalRouterStaticRoute{
+				Policy:   &nbdb.LogicalRouterStaticRoutePolicySrcIP,
+				IPPrefix: hostSubnet.String(),
+				Nexthop:  gwLRPIP[0].String(),
+			}
+
+			if config.Gateway.Mode != config.GatewayModeLocal {
+				p := func(item *nbdb.LogicalRouterStaticRoute) bool {
+					return item.IPPrefix == lrsr.IPPrefix && libovsdbops.PolicyEqualPredicate(lrsr.Policy, item.Policy)
+				}
+				// If migrating from local to shared gateway, let's remove the static routes towards
+				// management port interface for the hostSubnet prefix before adding the routes
+				// towards join switch.
+				mgmtIfAddr := util.GetNodeManagementIfAddr(hostSubnet)
+				oc.staticRouteCleanup([]net.IP{mgmtIfAddr.IP})
+
+				err := libovsdbops.CreateOrReplaceLogicalRouterStaticRouteWithPredicate(oc.nbClient, types.OVNClusterRouter,
+					&lrsr, p, &lrsr.Nexthop)
+				if err != nil {
+					return fmt.Errorf("error creating static route %+v in GR %s: %v", lrsr, types.OVNClusterRouter, err)
+				}
+			} else if config.Gateway.Mode == config.GatewayModeLocal {
+				// If migrating from shared to local gateway, let's remove the static routes towards
+				// join switch for the hostSubnet prefix
+				// Note syncManagementPort happens before gateway sync so only remove things pointing to join subnet
+
+				p := func(item *nbdb.LogicalRouterStaticRoute) bool {
+					return item.IPPrefix == lrsr.IPPrefix && item.Policy != nil && *item.Policy == *lrsr.Policy &&
+						config.ContainsJoinIP(net.ParseIP(item.Nexthop))
+				}
+				err := libovsdbops.DeleteLogicalRouterStaticRoutesWithPredicate(oc.nbClient, types.OVNClusterRouter, p)
+				if err != nil {
+					return fmt.Errorf("error deleting static route %+v in GR %s: %v", lrsr, types.OVNClusterRouter, err)
+				}
 			}
 		}
 	}
@@ -413,13 +417,14 @@ func (oc *DefaultNetworkController) gatewayInit(nodeName string, clusterIPSubnet
 	for i, ip := range l3GatewayConfig.IPAddresses {
 		externalIPs[i] = ip.IP
 	}
+
 	var natsToUpdate []*nbdb.NAT
 	// If l3gatewayAnnotation.IPAddresses changed, we need to update the SNATs on the GR
 	oldNATs := []*nbdb.NAT{}
 	if oldLogicalRouter != nil {
 		oldNATs, err = libovsdbops.GetRouterNATs(oc.nbClient, oldLogicalRouter)
 		if err != nil && errors.Is(err, libovsdbclient.ErrNotFound) {
-			return fmt.Errorf("unable to get NAT entries for router on node %s: %w", nodeName, err)
+			return fmt.Errorf("unable to get NAT entries for router on node %s: %w", node.Name, err)
 		}
 	}
 
@@ -526,8 +531,8 @@ func (oc *DefaultNetworkController) gatewayInit(nodeName string, clusterIPSubnet
 		}
 	}
 
-	if err := oc.cleanupStalePodSNATs(nodeName, l3GatewayConfig.IPAddresses); err != nil {
-		return fmt.Errorf("failed to sync stale SNATs on node %s: %v", nodeName, err)
+	if err := oc.cleanupStalePodSNATs(node.Name, l3GatewayConfig.IPAddresses); err != nil {
+		return fmt.Errorf("failed to sync stale SNATs on node %s: %v", node.Name, err)
 	}
 
 	// recording gateway mode metrics here after gateway setup is done
@@ -538,7 +543,7 @@ func (oc *DefaultNetworkController) gatewayInit(nodeName string, clusterIPSubnet
 
 // addExternalSwitch creates a switch connected to the external bridge and connects it to
 // the gateway router
-func (oc *DefaultNetworkController) addExternalSwitch(prefix, interfaceID, nodeName, gatewayRouter, macAddress, physNetworkName string, ipAddresses []*net.IPNet, vlanID *uint) error {
+func (oc *BaseNetworkController) addExternalSwitch(prefix, interfaceID, nodeName, gatewayRouter, macAddress, physNetworkName string, ipAddresses []*net.IPNet, vlanID *uint) error {
 	// Create the GR port that connects to external_switch with mac address of
 	// external interface and that IP address. In the case of `local` gateway
 	// mode, whenever ovnkube-node container restarts a new br-local bridge will
@@ -571,14 +576,14 @@ func (oc *DefaultNetworkController) addExternalSwitch(prefix, interfaceID, nodeN
 	// and add external interface as a logical port to external_switch.
 	// This is a learning switch port with "unknown" address. The external
 	// world is accessed via this port.
-	externalSwitch := externalSwitchName(prefix, nodeName)
+	externalSwitch := externalSwitchName(prefix, oc.GetNetworkScopedName(nodeName))
 	externalLogicalSwitchPort := nbdb.LogicalSwitchPort{
 		Addresses: []string{"unknown"},
 		Type:      "localnet",
 		Options: map[string]string{
 			"network_name": physNetworkName,
 		},
-		Name: interfaceID,
+		Name: oc.GetNetworkScopedName(interfaceID),
 	}
 	if vlanID != nil && int(*vlanID) != 0 {
 		intVlanID := int(*vlanID)
@@ -592,6 +597,20 @@ func (oc *DefaultNetworkController) addExternalSwitch(prefix, interfaceID, nodeN
 		Type: "router",
 		Options: map[string]string{
 			"router-port": externalRouterPort,
+
+			// This option will program OVN to start sending GARPs for all external IPS
+			// that the logical switch port has been configured to use. This is
+			// necessary for egress IP because if an egress IP is moved between two
+			// nodes, the nodes need to actively update the ARP cache of all neighbors
+			// as to notify them the change. If this is not the case: packets will
+			// continue to be routed to the old node which hosted the egress IP before
+			// it was moved, and the connections will fail.
+			"nat-addresses": "router",
+
+			// Setting nat-addresses to router will send out GARPs for all externalIPs and LB VIPs
+			// hosted on the GR. Setting exclude-lb-vips-from-garp to true will make sure GARPs for
+			// LB VIPs are not sent, thereby preventing GARP overload.
+			"exclude-lb-vips-from-garp": "true",
 		},
 		Addresses: []string{macAddress},
 	}
@@ -606,7 +625,7 @@ func (oc *DefaultNetworkController) addExternalSwitch(prefix, interfaceID, nodeN
 	return nil
 }
 
-func (oc *DefaultNetworkController) addPolicyBasedRoutes(nodeName, mgmtPortIP string, hostIfCIDR *net.IPNet, otherHostAddrs []string) error {
+func (oc *BaseNetworkController) addPolicyBasedRoutes(nodeName, mgmtPortIP string, hostIfCIDR *net.IPNet, otherHostAddrs []string) error {
 	var l3Prefix string
 	if utilnet.IsIPv6(hostIfCIDR.IP) {
 		l3Prefix = "ip6"
@@ -660,7 +679,7 @@ func (oc *DefaultNetworkController) addPolicyBasedRoutes(nodeName, mgmtPortIP st
 // the external_id, but since ovn-kubernetes isn't versioned, we won't ever
 // know which version someone is running of this and when the switch to version
 // N+2 is fully made.
-func (oc *DefaultNetworkController) syncPolicyBasedRoutes(nodeName string, matches sets.Set[string], priority, nexthop string) error {
+func (oc *BaseNetworkController) syncPolicyBasedRoutes(nodeName string, matches sets.Set[string], priority, nexthop string) error {
 	// create a map to track matches found
 	matchTracker := sets.New(sets.List(matches)...)
 
@@ -719,7 +738,7 @@ func (oc *DefaultNetworkController) syncPolicyBasedRoutes(nodeName string, match
 	return nil
 }
 
-func (oc *DefaultNetworkController) findPolicyBasedRoutes(priority string) ([]*nbdb.LogicalRouterPolicy, error) {
+func (oc *BaseNetworkController) findPolicyBasedRoutes(priority string) ([]*nbdb.LogicalRouterPolicy, error) {
 	intPriority, _ := strconv.Atoi(priority)
 	p := func(item *nbdb.LogicalRouterPolicy) bool {
 		return item.Priority == intPriority
@@ -732,7 +751,7 @@ func (oc *DefaultNetworkController) findPolicyBasedRoutes(priority string) ([]*n
 	return logicalRouterStaticPolicies, nil
 }
 
-func (oc *DefaultNetworkController) createPolicyBasedRoutes(match, priority, nexthops string) error {
+func (oc *BaseNetworkController) createPolicyBasedRoutes(match, priority, nexthops string) error {
 	intPriority, _ := strconv.Atoi(priority)
 	lrp := nbdb.LogicalRouterPolicy{
 		Priority: intPriority,
@@ -754,7 +773,7 @@ func (oc *DefaultNetworkController) createPolicyBasedRoutes(match, priority, nex
 	return nil
 }
 
-func (oc *DefaultNetworkController) deletePolicyBasedRoutes(policyID, priority string) error {
+func (oc *BaseNetworkController) deletePolicyBasedRoutes(policyID, priority string) error {
 	lrp := nbdb.LogicalRouterPolicy{UUID: policyID}
 	err := libovsdbops.DeleteLogicalRouterPolicies(oc.nbClient, types.OVNClusterRouter, &lrp)
 	if err != nil {

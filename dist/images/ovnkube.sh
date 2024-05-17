@@ -95,6 +95,7 @@ fi
 # OVN_METRICS_EXPORTER_PORT - ovs-metrics exporter port (default 9310)
 # OVN_KUBERNETES_CONNTRACK_ZONE - Conntrack zone number used for openflow rules (default 64000)
 # OVN_NORTHD_BACKOFF_INTERVAL - ovn northd backoff interval in ms (default 300)
+# OVN_ENABLE_SVC_TEMPLATE_SUPPORT - enable svc template support
 
 # The argument to the command is the operation to be performed
 # ovn-master ovn-controller ovn-node display display_env ovn_debug
@@ -280,6 +281,8 @@ ovn_enable_interconnect=${OVN_ENABLE_INTERCONNECT:-false}
 ovn_enable_multi_external_gateway=${OVN_ENABLE_MULTI_EXTERNAL_GATEWAY:-false}
 #OVN_ENABLE_OVNKUBE_IDENTITY - enable per node cert
 ovn_enable_ovnkube_identity=${OVN_ENABLE_OVNKUBE_IDENTITY:-true}
+#OVN_ENABLE_PERSISTENT_IPS - enable IPAM for virtualization workloads (KubeVirt persistent IPs)
+ovn_enable_persistent_ips=${OVN_ENABLE_PERSISTENT_IPS:-false}
 
 # OVNKUBE_NODE_MODE - is the mode which ovnkube node operates
 ovnkube_node_mode=${OVNKUBE_NODE_MODE:-"full"}
@@ -301,6 +304,8 @@ ovnkube_compact_mode_enable=${OVNKUBE_COMPACT_MODE_ENABLE:-false}
 # OVN_NORTHD_BACKOFF_INTERVAL - northd backoff interval in ms
 # defualt is 300; no backoff delay if set to 0
 ovn_northd_backoff_interval=${OVN_NORTHD_BACKOFF_INTERVAL:-"300"}
+# OVN_ENABLE_SVC_TEMPLATE_SUPPORT - enable svc template support
+ovn_enable_svc_template_support=${OVN_ENABLE_SVC_TEMPLATE_SUPPORT:-true}
 
 # Determine the ovn rundir.
 if [[ -f /usr/bin/ovn-appctl ]]; then
@@ -1238,6 +1243,12 @@ ovn-master() {
   fi
   echo "ovnkube_enable_multi_external_gateway_flag=${ovnkube_enable_multi_external_gateway_flag}"
 
+  ovn_enable_svc_template_support_flag=
+  if [[ ${ovn_enable_svc_template_support} == "true" ]]; then
+	  ovn_enable_svc_template_support_flag="--enable-svc-template-support"
+  fi
+  echo "ovn_enable_svc_template_support_flag=${ovn_enable_svc_template_support_flag}"
+
   init_node_flags=
   if [[ ${ovnkube_compact_mode_enable} == "true" ]]; then
     init_node_flags="--init-node ${K8S_NODE} --nodeport"
@@ -1246,6 +1257,12 @@ ovn-master() {
   else
     echo "=============== ovn-master ========== MASTER ONLY"
   fi
+
+  persistent_ips_enabled_flag=
+  if [[ ${ovn_enable_persistent_ips} == "true" ]]; then
+	  persistent_ips_enabled_flag="--enable-persistent-ips"
+  fi
+  echo "persistent_ips_enabled_flag: ${persistent_ips_enabled_flag}"
 
   /usr/bin/ovnkube --init-master ${K8S_NODE} \
     ${anp_enabled_flag} \
@@ -1263,6 +1280,7 @@ ovn-master() {
     ${multicast_enabled_flag} \
     ${multi_network_enabled_flag} \
     ${ovn_acl_logging_rate_limit_flag} \
+    ${ovn_enable_svc_template_support_flag} \
     ${ovnkube_config_duration_enable_flag} \
     ${ovnkube_enable_multi_external_gateway_flag} \
     ${ovnkube_metrics_scale_enable_flag} \
@@ -1273,6 +1291,7 @@ ovn-master() {
     ${ovn_v4_masquerade_subnet_opt} \
     ${ovn_v6_join_subnet_opt} \
     ${ovn_v6_masquerade_subnet_opt} \
+    ${persistent_ips_enabled_flag} \
     --cluster-subnets ${net_cidr} --k8s-service-cidr=${svc_cidr} \
     --gateway-mode=${ovn_gateway_mode} ${ovn_gateway_opts} \
     --host-network-namespace ${ovn_host_network_namespace} \
@@ -1506,6 +1525,12 @@ ovnkube-controller() {
   fi
   echo "ovnkube_local_cert_flags=${ovnkube_local_cert_flags}"
 
+  ovn_enable_svc_template_support_flag=
+  if [[ ${ovn_enable_svc_template_support} == "true" ]]; then
+	  ovn_enable_svc_template_support_flag="--enable-svc-template-support"
+  fi
+  echo "ovn_enable_svc_template_support_flag=${ovn_enable_svc_template_support_flag}"
+
   echo "=============== ovnkube-controller ========== MASTER ONLY"
   /usr/bin/ovnkube --init-ovnkube-controller ${K8S_NODE} \
     ${anp_enabled_flag} \
@@ -1522,6 +1547,7 @@ ovnkube-controller() {
     ${multi_network_enabled_flag} \
     ${ovn_acl_logging_rate_limit_flag} \
     ${ovn_dbs} \
+    ${ovn_enable_svc_template_support_flag} \
     ${ovnkube_config_duration_enable_flag} \
     ${ovnkube_enable_interconnect_flag} \
     ${ovnkube_local_cert_flags} \
@@ -1884,6 +1910,12 @@ ovnkube-controller-with-node() {
   fi
   echo "ovnkube_local_cert_flags=${ovnkube_local_cert_flags}"
 
+  ovn_enable_svc_template_support_flag=
+  if [[ ${ovn_enable_svc_template_support} == "true" ]]; then
+	  ovn_enable_svc_template_support_flag="--enable-svc-template-support"
+  fi
+  echo "ovn_enable_svc_template_support_flag=${ovn_enable_svc_template_support_flag}"
+
   echo "=============== ovnkube-controller-with-node --init-ovnkube-controller-with-node=========="
   /usr/bin/ovnkube --init-ovnkube-controller ${K8S_NODE} --init-node ${K8S_NODE} \
     ${anp_enabled_flag} \
@@ -1912,6 +1944,7 @@ ovnkube-controller-with-node() {
     ${ofctrl_wait_before_clear} \
     ${ovn_acl_logging_rate_limit_flag} \
     ${ovn_dbs} \
+    ${ovn_enable_svc_template_support_flag} \
     ${ovn_encap_ip_flag} \
     ${ovn_encap_port_flag} \
     ${ovnkube_config_duration_enable_flag} \
@@ -1988,6 +2021,12 @@ ovn-cluster-manager() {
   fi
   echo "egressservice_enabled_flag=${egressservice_enabled_flag}"
 
+  anp_enabled_flag=
+  if [[ ${ovn_admin_network_policy_enable} == "true" ]]; then
+      anp_enabled_flag="--enable-admin-network-policy"
+  fi
+  echo "anp_enabled_flag=${anp_enabled_flag}"
+
   egressfirewall_enabled_flag=
   if [[ ${ovn_egressfirewall_enable} == "true" ]]; then
 	  egressfirewall_enabled_flag="--enable-egress-firewall"
@@ -2057,6 +2096,12 @@ ovn-cluster-manager() {
   fi
   echo "multi_network_enabled_flag: ${multi_network_enabled_flag}"
 
+  persistent_ips_enabled_flag=
+  if [[ ${ovn_enable_persistent_ips} == "true" ]]; then
+	  persistent_ips_enabled_flag="--enable-persistent-ips"
+  fi
+  echo "persistent_ips_enabled_flag: ${persistent_ips_enabled_flag}"
+
   ovnkube_cluster_manager_metrics_bind_address="${metrics_endpoint_ip}:9411"
   echo "ovnkube_cluster_manager_metrics_bind_address: ${ovnkube_cluster_manager_metrics_bind_address}"
 
@@ -2089,6 +2134,7 @@ ovn-cluster-manager() {
 
   echo "=============== ovn-cluster-manager ========== MASTER ONLY"
   /usr/bin/ovnkube --init-cluster-manager ${K8S_NODE} \
+    ${anp_enabled_flag} \
     ${egressfirewall_enabled_flag} \
     ${egressip_enabled_flag} \
     ${egressip_healthcheck_port_flag} \
@@ -2098,6 +2144,7 @@ ovn-cluster-manager() {
     ${hybrid_overlay_flags} \
     ${multicast_enabled_flag} \
     ${multi_network_enabled_flag} \
+    ${persistent_ips_enabled_flag} \
     ${ovnkube_enable_interconnect_flag} \
     ${ovnkube_enable_multi_external_gateway_flag} \
     ${ovnkube_metrics_tls_opts} \

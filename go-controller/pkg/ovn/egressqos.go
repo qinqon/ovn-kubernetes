@@ -170,7 +170,7 @@ func (oc *DefaultNetworkController) createASForEgressQoSRule(podSelector metav1.
 			podsIps = append(podsIps, podIPs...)
 		}
 	}
-	err = addrSet.SetIPs(podsIps)
+	err = addrSet.SetAddresses(util.StringSlice(podsIps))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -730,7 +730,7 @@ func (oc *DefaultNetworkController) syncEgressQoSPod(key string) error {
 				continue
 			}
 			ips := obj.([]net.IP)
-			ops, err := rule.addrSet.DeleteIPsReturnOps(ips)
+			ops, err := rule.addrSet.DeleteAddressesReturnOps(util.StringSlice(ips))
 			if err != nil {
 				return err
 			}
@@ -776,14 +776,14 @@ func (oc *DefaultNetworkController) syncEgressQoSPod(key string) error {
 
 		_, loaded := r.pods.Load(pod.Name)
 		if selector.Matches(podLabels) && !loaded {
-			ops, err := r.addrSet.AddIPsReturnOps(podIPs)
+			ops, err := r.addrSet.AddAddressesReturnOps(util.StringSlice(podIPs))
 			if err != nil {
 				return err
 			}
 			allOps = append(allOps, ops...)
 			podMapOps = append(podMapOps, mapAndOp{r.pods, mapInsert})
 		} else if !selector.Matches(podLabels) && loaded {
-			ops, err := r.addrSet.DeleteIPsReturnOps(podIPs)
+			ops, err := r.addrSet.DeleteAddressesReturnOps(util.StringSlice(podIPs))
 			if err != nil {
 				return err
 			}
@@ -1108,6 +1108,6 @@ func (oc *DefaultNetworkController) updateEgressQoSZoneStatusCondition(newCondit
 	applyObj := egressqosapply.EgressQoS(name, namespace).
 		WithStatus(egressqosapply.EgressQoSStatus().WithConditions(newCondition))
 	_, err = oc.kube.EgressQoSClient.K8sV1().EgressQoSes(namespace).ApplyStatus(context.TODO(),
-		applyObj, metav1.ApplyOptions{FieldManager: oc.zone})
+		applyObj, metav1.ApplyOptions{FieldManager: oc.zone, Force: true})
 	return err
 }

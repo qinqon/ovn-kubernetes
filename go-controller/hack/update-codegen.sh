@@ -13,7 +13,15 @@ SCRIPT_ROOT=$(dirname ${BASH_SOURCE})/..
 olddir="${PWD}"
 builddir="$(mktemp -d)"
 cd "${builddir}"
-GO111MODULE=on go install sigs.k8s.io/controller-tools/cmd/controller-gen@latest
+GO111MODULE=on go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.14.0
+BINS=(
+    deepcopy-gen
+    applyconfiguration-gen
+    client-gen
+    informer-gen
+    lister-gen
+)
+GO111MODULE=on go install $(printf "k8s.io/code-generator/cmd/%s@release-1.29 " "${BINS[@]}")
 cd "${olddir}"
 if [[ "${builddir}" == /tmp/* ]]; then #paranoia
     rm -rf "${builddir}"
@@ -24,6 +32,7 @@ for crd in ${crds}; do
   deepcopy-gen \
     --go-header-file hack/boilerplate.go.txt \
     --input-dirs github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/$crd/v1 \
+    --output-base "${SCRIPT_ROOT}" \
     -O zz_generated.deepcopy \
     --bounding-dirs github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd
 
@@ -31,6 +40,7 @@ for crd in ${crds}; do
   applyconfiguration-gen \
     --go-header-file hack/boilerplate.go.txt \
     --input-dirs github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/$crd/v1 \
+    --output-base "${SCRIPT_ROOT}" \
     --output-package github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/$crd/v1/apis/applyconfiguration \
     "$@"
 
@@ -40,6 +50,7 @@ for crd in ${crds}; do
     --clientset-name "${CLIENTSET_NAME_VERSIONED:-versioned}" \
     --input-base "" \
     --input github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/$crd/v1 \
+    --output-base "${SCRIPT_ROOT}" \
     --output-package github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/$crd/v1/apis/clientset \
     --apply-configuration-package github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/$crd/v1/apis/applyconfiguration \
     --plural-exceptions="EgressQoS:EgressQoSes" \
@@ -49,6 +60,7 @@ for crd in ${crds}; do
   lister-gen \
     --go-header-file hack/boilerplate.go.txt \
     --input-dirs github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/$crd/v1 \
+    --output-base "${SCRIPT_ROOT}" \
     --output-package github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/$crd/v1/apis/listers \
     --plural-exceptions="EgressQoS:EgressQoSes" \
     "$@"
@@ -59,6 +71,7 @@ for crd in ${crds}; do
     --input-dirs github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/$crd/v1 \
     --versioned-clientset-package github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/$crd/v1/apis/clientset/versioned \
     --listers-package  github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/$crd/v1/apis/listers \
+    --output-base "${SCRIPT_ROOT}" \
     --output-package github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/$crd/v1/apis/informers \
     --plural-exceptions="EgressQoS:EgressQoSes" \
     "$@"
@@ -71,6 +84,8 @@ for crd in ${crds}; do
   cp github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/$crd/v1/zz_generated.deepcopy.go $SCRIPT_ROOT/pkg/crd/$crd/v1
 
 done
+
+rm -rf "${SCRIPT_ROOT}/github.com/"
 
 echo "Generating CRDs"
 mkdir -p _output/crds
@@ -94,12 +109,9 @@ echo "Copying egressIP CRD"
 cp _output/crds/k8s.ovn.org_egressips.yaml ../dist/templates/k8s.ovn.org_egressips.yaml.j2
 echo "Copying egressQoS CRD"
 cp _output/crds/k8s.ovn.org_egressqoses.yaml ../dist/templates/k8s.ovn.org_egressqoses.yaml.j2
-# NOTE: When you update vendoring versions for the ANP & BANP APIs, we must update the version of the CRD we pull from in the below URL
-echo "Copying Admin Network Policy CRD"
-curl -sSL https://raw.githubusercontent.com/kubernetes-sigs/network-policy-api/5889d651e632/config/crd/experimental/policy.networking.k8s.io_adminnetworkpolicies.yaml -o ../dist/templates/policy.networking.k8s.io_adminnetworkpolicies.yaml
-echo "Copying Baseline Admin Network Policy CRD"
-curl -sSL https://raw.githubusercontent.com/kubernetes-sigs/network-policy-api/5889d651e632/config/crd/experimental/policy.networking.k8s.io_baselineadminnetworkpolicies.yaml -o ../dist/templates/policy.networking.k8s.io_baselineadminnetworkpolicies.yaml
 echo "Copying adminpolicybasedexternalroutes CRD"
 cp _output/crds/k8s.ovn.org_adminpolicybasedexternalroutes.yaml ../dist/templates/k8s.ovn.org_adminpolicybasedexternalroutes.yaml.j2
 echo "Copying egressService CRD"
 cp _output/crds/k8s.ovn.org_egressservices.yaml ../dist/templates/k8s.ovn.org_egressservices.yaml.j2
+echo "Copying IPAMClaim CRD"
+curl -sSL https://raw.githubusercontent.com/k8snetworkplumbingwg/ipamclaims/v0.4.0-alpha/artifacts/k8s.cni.cncf.io_ipamclaims.yaml -o ../dist/templates/k8s.cni.cncf.io_ipamclaims.yaml

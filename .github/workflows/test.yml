@@ -15,8 +15,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  GO_VERSION: "1.20.6"
-  K8S_VERSION: v1.28.0
+  GO_VERSION: "1.21"
+  K8S_VERSION: v1.29.2
   KIND_CLUSTER_NAME: ovn
   KIND_INSTALL_INGRESS: true
   KIND_ALLOW_SYSTEM_WRITES: true
@@ -50,7 +50,7 @@ jobs:
     - name: Verify
       uses: golangci/golangci-lint-action@v4
       with:
-        version: v1.52
+        version: v1.56.1
         working-directory: go-controller
         args: --modules-download-mode=vendor --timeout=15m0s --verbose
 
@@ -345,14 +345,23 @@ jobs:
     - name: Check out code into the Go module directory - from PR branch
       uses: actions/checkout@v4
 
+    - name: Runner Diagnostics
+      uses: ./.github/actions/diagnostics
+
     - name: ovn upgrade
       run: |
         export OVN_IMAGE="ovn-daemonset-f:pr"
         make -C test upgrade-ovn
 
+    - name: Runner Diagnostics
+      uses: ./.github/actions/diagnostics
+
     - name: Run E2E shard-conformance
       run: |
         make -C test shard-conformance
+
+    - name: Runner Diagnostics
+      uses: ./.github/actions/diagnostics
 
     - name: Export kind logs
       if: always()
@@ -397,6 +406,7 @@ jobs:
           - {"target": "shard-conformance", "ha": "noHA", "gateway-mode": "shared", "ipfamily": "ipv4",      "disable-snat-multiple-gws": "snatGW",   "second-bridge": "1br", "ic": "ic-single-node-zones"}
           - {"target": "control-plane",     "ha": "HA",   "gateway-mode": "shared", "ipfamily": "ipv6",      "disable-snat-multiple-gws": "noSnatGW", "second-bridge": "1br", "ic": "ic-disabled"}
           - {"target": "control-plane",     "ha": "HA",   "gateway-mode": "shared", "ipfamily": "ipv4",      "disable-snat-multiple-gws": "snatGW",   "second-bridge": "1br", "ic": "ic-disabled"}
+          - {"target": "control-plane-helm", "ha": "HA", "gateway-mode": "shared", "ipfamily": "ipv4",      "disable-snat-multiple-gws": "snatGW",   "second-bridge": "1br", "ic": "ic-disabled"}
           - {"target": "control-plane",     "ha": "noHA", "gateway-mode": "local",  "ipfamily": "ipv4",      "disable-snat-multiple-gws": "noSnatGW", "second-bridge": "1br", "ic": "ic-single-node-zones"}
           - {"target": "control-plane",     "ha": "noHA", "gateway-mode": "local",  "ipfamily": "ipv6",      "disable-snat-multiple-gws": "noSnatGW", "second-bridge": "1br", "ic": "ic-single-node-zones"}
           - {"target": "control-plane",     "ha": "noHA", "gateway-mode": "shared", "ipfamily": "ipv4",      "disable-snat-multiple-gws": "noSnatGW", "second-bridge": "2br", "ic": "ic-single-node-zones"}
@@ -417,9 +427,9 @@ jobs:
     needs: [ build-pr ]
     env:
       JOB_NAME: "${{ matrix.target }}-${{ matrix.ha }}-${{ matrix.gateway-mode }}-${{ matrix.ipfamily }}-${{ matrix.disable-snat-multiple-gws }}-${{ matrix.second-bridge }}"
-      OVN_HYBRID_OVERLAY_ENABLE: "${{ matrix.target == 'control-plane' }}"
-      OVN_MULTICAST_ENABLE:  "${{ matrix.target == 'control-plane' }}"
-      OVN_EMPTY_LB_EVENTS: "${{ matrix.target == 'control-plane' }}"
+      OVN_HYBRID_OVERLAY_ENABLE: "${{ matrix.target == 'control-plane' || matrix.target == 'control-plane-helm' }}"
+      OVN_MULTICAST_ENABLE:  "${{ matrix.target == 'control-plane' || matrix.target == 'control-plane-helm' }}"
+      OVN_EMPTY_LB_EVENTS: "${{ matrix.target == 'control-plane' || matrix.target == 'control-plane-helm' }}"
       OVN_HA: "${{ matrix.ha == 'HA' }}"
       OVN_DISABLE_SNAT_MULTIPLE_GWS: "${{ matrix.disable-snat-multiple-gws == 'noSnatGW' }}"
       KIND_INSTALL_METALLB: "${{ matrix.target == 'control-plane' }}"
@@ -435,6 +445,7 @@ jobs:
       KIND_NUM_WORKER: "${{ matrix.num-workers }}"
       KIND_NUM_NODES_PER_ZONE: "${{ matrix.num-nodes-per-zone }}"
       OVN_DISABLE_FORWARDING: "${{ matrix.forwarding == 'disable-forwarding' }}"
+      USE_HELM: "${{ matrix.target == 'control-plane-helm' }}"
     steps:
 
     - name: Free up disk space
@@ -489,11 +500,17 @@ jobs:
         export OVN_IMAGE="ovn-daemonset-f:pr"
         make -C test install-kind
 
+    - name: Runner Diagnostics
+      uses: ./.github/actions/diagnostics
+
     - name: Run Tests
       # e2e tests take ~60 minutes normally, 120 should be more than enough
       # set 3 hours for control-plane tests as these might take a while
       timeout-minutes: ${{ matrix.target == 'control-plane' && 180 || matrix.target == 'external-gateway' && 180 || 120 }}
       run: |
+        # used by e2e diagnostics package
+        export OVN_IMAGE="ovn-daemonset-f:pr"
+        
         if [ "${{ matrix.target }}" == "multi-homing" ]; then
           make -C test control-plane WHAT="Multi Homing"
         elif [ "${{ matrix.target }}" == "node-ip-mac-migration" ]; then
@@ -506,12 +523,17 @@ jobs:
           make -C test control-plane WHAT="External Gateway"
         elif [ "${{ matrix.target }}" == "kv-live-migration" ]; then
           make -C test control-plane WHAT="Kubevirt Virtual Machines"
+        elif [ "${{ matrix.target }}" == "control-plane-helm" ]; then
+          make -C test control-plane
         else
           make -C test ${{ matrix.target }}
           if [ "${{ matrix.ipfamily }}" != "ipv6" ]; then
             make -C test conformance
           fi
         fi
+
+    - name: Runner Diagnostics
+      uses: ./.github/actions/diagnostics
 
     - name: Export kind logs
       if: always()
@@ -592,13 +614,22 @@ jobs:
       run: |
         ./contrib/kind-dual-stack-conversion.sh
 
+    - name: Runner Diagnostics
+      uses: ./.github/actions/diagnostics
+
     - name: Run Dual-Stack Tests
       run: |
         make -C test shard-test WHAT="Networking Granular Checks\|DualStack"
 
+    - name: Runner Diagnostics
+      uses: ./.github/actions/diagnostics
+
     - name: Run Dual-Stack Control-Plane Tests
       run: |
         make -C test control-plane WHAT="DualStack"
+
+    - name: Runner Diagnostics
+      uses: ./.github/actions/diagnostics
 
     - name: Export kind logs
       if: always()
@@ -687,9 +718,17 @@ jobs:
         run: |
           export OVN_IMAGE="ovn-daemonset-f:pr"
           make -C test install-kind
+
+      - name: Runner Diagnostics
+        uses: ./.github/actions/diagnostics
+
       - name: Run Tests
         run: |
           make -C test ${{ matrix.target }}
+
+      - name: Runner Diagnostics
+        uses: ./.github/actions/diagnostics
+
       - name: Export logs
         if: always()
         run: |

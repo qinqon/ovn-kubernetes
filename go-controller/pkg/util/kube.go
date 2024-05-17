@@ -37,9 +37,11 @@ import (
 	"k8s.io/klog/v2"
 	utilnet "k8s.io/utils/net"
 
+	ipamclaimssclientset "github.com/k8snetworkplumbingwg/ipamclaims/pkg/crd/ipamclaims/v1alpha1/apis/clientset/versioned"
 	multinetworkpolicyclientset "github.com/k8snetworkplumbingwg/multi-networkpolicy/pkg/client/clientset/versioned"
 	networkattchmentdefclientset "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/client/clientset/versioned"
 	ocpcloudnetworkclientset "github.com/openshift/client-go/cloudnetwork/clientset/versioned"
+	ocpnetworkclientset "github.com/openshift/client-go/network/clientset/versioned"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	adminpolicybasedrouteclientset "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/adminpolicybasedroute/v1/apis/clientset/versioned"
 	egressfirewallclientset "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/crd/egressfirewall/v1/apis/clientset/versioned"
@@ -56,12 +58,14 @@ type OVNClientset struct {
 	ANPClient                anpclientset.Interface
 	EgressIPClient           egressipclientset.Interface
 	EgressFirewallClient     egressfirewallclientset.Interface
+	OCPNetworkClient         ocpnetworkclientset.Interface
 	CloudNetworkClient       ocpcloudnetworkclientset.Interface
 	EgressQoSClient          egressqosclientset.Interface
 	NetworkAttchDefClient    networkattchmentdefclientset.Interface
 	MultiNetworkPolicyClient multinetworkpolicyclientset.Interface
 	EgressServiceClient      egressserviceclientset.Interface
 	AdminPolicyRouteClient   adminpolicybasedrouteclientset.Interface
+	IPAMClaimsClient         ipamclaimssclientset.Interface
 }
 
 // OVNMasterClientset
@@ -71,10 +75,12 @@ type OVNMasterClientset struct {
 	EgressIPClient           egressipclientset.Interface
 	CloudNetworkClient       ocpcloudnetworkclientset.Interface
 	EgressFirewallClient     egressfirewallclientset.Interface
+	OCPNetworkClient         ocpnetworkclientset.Interface
 	EgressQoSClient          egressqosclientset.Interface
 	MultiNetworkPolicyClient multinetworkpolicyclientset.Interface
 	EgressServiceClient      egressserviceclientset.Interface
 	AdminPolicyRouteClient   adminpolicybasedrouteclientset.Interface
+	IPAMClaimsClient         ipamclaimssclientset.Interface
 }
 
 // OVNNetworkControllerManagerClientset
@@ -83,10 +89,12 @@ type OVNKubeControllerClientset struct {
 	ANPClient                anpclientset.Interface
 	EgressIPClient           egressipclientset.Interface
 	EgressFirewallClient     egressfirewallclientset.Interface
+	OCPNetworkClient         ocpnetworkclientset.Interface
 	EgressQoSClient          egressqosclientset.Interface
 	MultiNetworkPolicyClient multinetworkpolicyclientset.Interface
 	EgressServiceClient      egressserviceclientset.Interface
 	AdminPolicyRouteClient   adminpolicybasedrouteclientset.Interface
+	IPAMClaimsClient         ipamclaimssclientset.Interface
 }
 
 type OVNNodeClientset struct {
@@ -98,6 +106,7 @@ type OVNNodeClientset struct {
 
 type OVNClusterManagerClientset struct {
 	KubeClient             kubernetes.Interface
+	ANPClient              anpclientset.Interface
 	EgressIPClient         egressipclientset.Interface
 	CloudNetworkClient     ocpcloudnetworkclientset.Interface
 	NetworkAttchDefClient  networkattchmentdefclientset.Interface
@@ -105,6 +114,8 @@ type OVNClusterManagerClientset struct {
 	AdminPolicyRouteClient adminpolicybasedrouteclientset.Interface
 	EgressFirewallClient   egressfirewallclientset.Interface
 	EgressQoSClient        egressqosclientset.Interface
+	IPAMClaimsClient       ipamclaimssclientset.Interface
+	OCPNetworkClient       ocpnetworkclientset.Interface
 }
 
 const (
@@ -124,10 +135,12 @@ func (cs *OVNClientset) GetMasterClientset() *OVNMasterClientset {
 		EgressIPClient:           cs.EgressIPClient,
 		CloudNetworkClient:       cs.CloudNetworkClient,
 		EgressFirewallClient:     cs.EgressFirewallClient,
+		OCPNetworkClient:         cs.OCPNetworkClient,
 		EgressQoSClient:          cs.EgressQoSClient,
 		MultiNetworkPolicyClient: cs.MultiNetworkPolicyClient,
 		EgressServiceClient:      cs.EgressServiceClient,
 		AdminPolicyRouteClient:   cs.AdminPolicyRouteClient,
+		IPAMClaimsClient:         cs.IPAMClaimsClient,
 	}
 }
 
@@ -137,10 +150,12 @@ func (cs *OVNMasterClientset) GetOVNKubeControllerClientset() *OVNKubeController
 		ANPClient:                cs.ANPClient,
 		EgressIPClient:           cs.EgressIPClient,
 		EgressFirewallClient:     cs.EgressFirewallClient,
+		OCPNetworkClient:         cs.OCPNetworkClient,
 		EgressQoSClient:          cs.EgressQoSClient,
 		MultiNetworkPolicyClient: cs.MultiNetworkPolicyClient,
 		EgressServiceClient:      cs.EgressServiceClient,
 		AdminPolicyRouteClient:   cs.AdminPolicyRouteClient,
+		IPAMClaimsClient:         cs.IPAMClaimsClient,
 	}
 }
 
@@ -150,16 +165,19 @@ func (cs *OVNClientset) GetOVNKubeControllerClientset() *OVNKubeControllerClient
 		ANPClient:                cs.ANPClient,
 		EgressIPClient:           cs.EgressIPClient,
 		EgressFirewallClient:     cs.EgressFirewallClient,
+		OCPNetworkClient:         cs.OCPNetworkClient,
 		EgressQoSClient:          cs.EgressQoSClient,
 		MultiNetworkPolicyClient: cs.MultiNetworkPolicyClient,
 		EgressServiceClient:      cs.EgressServiceClient,
 		AdminPolicyRouteClient:   cs.AdminPolicyRouteClient,
+		IPAMClaimsClient:         cs.IPAMClaimsClient,
 	}
 }
 
 func (cs *OVNClientset) GetClusterManagerClientset() *OVNClusterManagerClientset {
 	return &OVNClusterManagerClientset{
 		KubeClient:             cs.KubeClient,
+		ANPClient:              cs.ANPClient,
 		EgressIPClient:         cs.EgressIPClient,
 		CloudNetworkClient:     cs.CloudNetworkClient,
 		NetworkAttchDefClient:  cs.NetworkAttchDefClient,
@@ -167,6 +185,8 @@ func (cs *OVNClientset) GetClusterManagerClientset() *OVNClusterManagerClientset
 		AdminPolicyRouteClient: cs.AdminPolicyRouteClient,
 		EgressFirewallClient:   cs.EgressFirewallClient,
 		EgressQoSClient:        cs.EgressQoSClient,
+		IPAMClaimsClient:       cs.IPAMClaimsClient,
+		OCPNetworkClient:       cs.OCPNetworkClient,
 	}
 }
 
@@ -395,6 +415,10 @@ func NewOVNClientset(conf *config.KubernetesConfig) (*OVNClientset, error) {
 	if err != nil {
 		return nil, err
 	}
+	networkClientset, err := ocpnetworkclientset.NewForConfig(kconfig)
+	if err != nil {
+		return nil, err
+	}
 	egressIPClientset, err := egressipclientset.NewForConfig(kconfig)
 	if err != nil {
 		return nil, err
@@ -426,17 +450,24 @@ func NewOVNClientset(conf *config.KubernetesConfig) (*OVNClientset, error) {
 		return nil, err
 	}
 
+	ipamClaimsClientset, err := ipamclaimssclientset.NewForConfig(kconfig)
+	if err != nil {
+		return nil, err
+	}
+
 	return &OVNClientset{
 		KubeClient:               kclientset,
 		ANPClient:                anpClientset,
 		EgressIPClient:           egressIPClientset,
 		EgressFirewallClient:     egressFirewallClientset,
+		OCPNetworkClient:         networkClientset,
 		CloudNetworkClient:       cloudNetworkClientset,
 		EgressQoSClient:          egressqosClientset,
 		NetworkAttchDefClient:    networkAttchmntDefClientset,
 		MultiNetworkPolicyClient: multiNetworkPolicyClientset,
 		EgressServiceClient:      egressserviceClientset,
 		AdminPolicyRouteClient:   adminPolicyBasedRouteClientset,
+		IPAMClaimsClient:         ipamClaimsClientset,
 	}, nil
 }
 
@@ -623,86 +654,6 @@ func UseEndpointSlices(kubeClient kubernetes.Interface) bool {
 	return false
 }
 
-type LbEndpoints struct {
-	V4IPs []string
-	V6IPs []string
-	Port  int32
-}
-
-// GetLbEndpoints returns the IPv4 and IPv6 addresses of eligible endpoints from a
-// provided list of endpoint slices, for a given service and service port.
-func GetLbEndpoints(slices []*discovery.EndpointSlice, svcPort kapi.ServicePort, service *v1.Service) LbEndpoints {
-	var validSlices []*discovery.EndpointSlice
-	v4IPs := sets.NewString()
-	v6IPs := sets.NewString()
-	out := LbEndpoints{}
-
-	// return an empty object so the caller doesn't have to check for nil and can use it as an iterator
-	if len(slices) == 0 {
-		return out
-	}
-
-	for _, slice := range slices {
-		klog.V(5).Infof("Getting endpoints for slice %s/%s", slice.Namespace, slice.Name)
-
-		for _, slicePort := range slice.Ports {
-			// If Service port name is set, it must match the name field in the endpoint
-			// If Service port name is not set, we just use the endpoint port
-			if svcPort.Name != "" && svcPort.Name != *slicePort.Name {
-				klog.V(5).Infof("Slice %s with different Port name, requested: %s received: %s",
-					slice.Name, svcPort.Name, *slicePort.Name)
-				continue
-			}
-
-			// Skip ports that don't match the protocol
-			if *slicePort.Protocol != svcPort.Protocol {
-				klog.V(5).Infof("Slice %s with different Port protocol, requested: %s received: %s",
-					slice.Name, svcPort.Protocol, *slicePort.Protocol)
-				continue
-			}
-
-			out.Port = *slicePort.Port
-
-			if slice.AddressType == discovery.AddressTypeFQDN {
-				klog.V(5).Infof("Skipping FQDN slice %s/%s", slice.Namespace, slice.Name)
-			} else { // endpoints are here either IPv4 or IPv6
-				validSlices = append(validSlices, slice)
-			}
-		}
-	}
-
-	serviceStr := ""
-	if service != nil {
-		serviceStr = fmt.Sprintf(" for service %s/%s", service.Namespace, service.Name)
-	}
-	// separate IPv4 from IPv6 addresses for eligible endpoints
-	for _, endpoint := range getEligibleEndpoints(validSlices, service) {
-		for _, ip := range endpoint.Addresses {
-			if utilnet.IsIPv4String(ip) {
-				klog.V(5).Infof("Adding endpoint IPv4 address %s port %d%s",
-					ip, out.Port, serviceStr)
-				v4IPs.Insert(utilnet.ParseIPSloppy(ip).String())
-
-			} else if utilnet.IsIPv6String(ip) {
-				klog.V(5).Infof("Adding endpoint IPv6 address %s port %d%s",
-					ip, out.Port, serviceStr)
-				v6IPs.Insert(utilnet.ParseIPSloppy(ip).String())
-
-			} else {
-				klog.V(5).Infof("Skipping unrecognized address %s port %d%s",
-					ip, out.Port, serviceStr)
-			}
-		}
-	}
-
-	out.V4IPs = v4IPs.List()
-	out.V6IPs = v6IPs.List()
-	klog.V(5).Infof("LB Endpoints for %s/%s are: %v / %v on port: %d",
-		slices[0].Namespace, slices[0].Labels[discovery.LabelServiceName],
-		out.V4IPs, out.V6IPs, out.Port)
-	return out
-}
-
 type K8sObject interface {
 	metav1.Object
 	k8sruntime.Object
@@ -776,64 +727,54 @@ func NoHostSubnet(node *v1.Node) bool {
 // are always published.
 // Note that condFn, when specified, is used by utility functions to filter out non-local endpoints.
 // It's important to run it /before/ the eligible endpoint selection, since the order impacts the output.
-func getSelectedEligibleEndpoints(endpointSlices []*discovery.EndpointSlice, service *kapi.Service, condFn func(ep discovery.Endpoint) bool) []discovery.Endpoint {
+func getSelectedEligibleEndpoints(endpoints []discovery.Endpoint, service *kapi.Service, condFn func(ep discovery.Endpoint) bool) []discovery.Endpoint {
 	var readySelectedEndpoints []discovery.Endpoint
 	var servingTerminatingSelectedEndpoints []discovery.Endpoint
 	var eligibleEndpoints []discovery.Endpoint
 
 	includeAllEndpoints := service != nil && service.Spec.PublishNotReadyAddresses
 
-	for _, slice := range endpointSlices {
-		for _, endpoint := range slice.Endpoints {
-			// Apply precondition on endpoints, if provided
-			if condFn == nil || condFn(endpoint) {
-				// Assign to the ready or the serving&terminating slice for a later decision
-				if includeAllEndpoints || IsEndpointReady(endpoint) {
-					readySelectedEndpoints = append(readySelectedEndpoints, endpoint)
-				} else if IsEndpointServing(endpoint) && IsEndpointTerminating(endpoint) {
-					servingTerminatingSelectedEndpoints = append(servingTerminatingSelectedEndpoints, endpoint)
-				}
+	for _, endpoint := range endpoints {
+		// Apply precondition on endpoints, if provided
+		if condFn == nil || condFn(endpoint) {
+			// Assign to the ready or the serving&terminating slice for a later decision
+			if includeAllEndpoints || IsEndpointReady(endpoint) {
+				readySelectedEndpoints = append(readySelectedEndpoints, endpoint)
+			} else if IsEndpointServing(endpoint) && IsEndpointTerminating(endpoint) {
+				servingTerminatingSelectedEndpoints = append(servingTerminatingSelectedEndpoints, endpoint)
 			}
 		}
 	}
-	serviceStr := ""
-	if service != nil {
-		serviceStr = fmt.Sprintf(" (service %s/%s)", service.Namespace, service.Name)
-	}
-	klog.V(5).Infof("Endpoint selection%s: found %d ready endpoints", serviceStr, len(readySelectedEndpoints))
-
 	// Select eligible endpoints based on readiness
 	eligibleEndpoints = readySelectedEndpoints
 	// Fallback to serving terminating endpoints (ready=false, serving=true, terminating=true) only if none are ready
 	if len(readySelectedEndpoints) == 0 {
 		eligibleEndpoints = servingTerminatingSelectedEndpoints
-		klog.V(5).Infof("Endpoint selection%s: fallback to %d serving & terminating endpoints",
-			serviceStr, len(servingTerminatingSelectedEndpoints))
 	}
 
 	return eligibleEndpoints
 }
 
-func getLocalEligibleEndpoints(endpointSlices []*discovery.EndpointSlice, service *kapi.Service, nodeName string) []discovery.Endpoint {
-	return getSelectedEligibleEndpoints(endpointSlices, service, func(endpoint discovery.Endpoint) bool {
+func getLocalEligibleEndpoints(endpoints []discovery.Endpoint, service *kapi.Service, nodeName string) []discovery.Endpoint {
+	return getSelectedEligibleEndpoints(endpoints, service, func(endpoint discovery.Endpoint) bool {
 		return endpoint.NodeName != nil && *endpoint.NodeName == nodeName
 	})
 }
 
-func getEligibleEndpoints(endpointSlices []*discovery.EndpointSlice, service *kapi.Service) []discovery.Endpoint {
-	return getSelectedEligibleEndpoints(endpointSlices, service, nil)
+func getEligibleEndpoints(endpoints []discovery.Endpoint, service *kapi.Service) []discovery.Endpoint {
+	return getSelectedEligibleEndpoints(endpoints, service, nil)
 }
 
-// getEligibleEndpointAddresses takes a list of endpointSlices, a service and, optionally, a nodeName
+// getEligibleEndpointAddresses takes a list of endpoints, a service and, optionally, a nodeName
 // and applies the endpoint selection logic. It returns the IP addresses of eligible endpoints.
-func getEligibleEndpointAddresses(endpointSlices []*discovery.EndpointSlice, service *kapi.Service, nodeName string) sets.Set[string] {
+func getEligibleEndpointAddresses(endpoints []discovery.Endpoint, service *kapi.Service, nodeName string) []string {
 	endpointsAddresses := sets.New[string]()
 	var eligibleEndpoints []discovery.Endpoint
 
 	if nodeName != "" {
-		eligibleEndpoints = getLocalEligibleEndpoints(endpointSlices, service, nodeName)
+		eligibleEndpoints = getLocalEligibleEndpoints(endpoints, service, nodeName)
 	} else {
-		eligibleEndpoints = getEligibleEndpoints(endpointSlices, service)
+		eligibleEndpoints = getEligibleEndpoints(endpoints, service)
 	}
 	for _, endpoint := range eligibleEndpoints {
 		for _, ip := range endpoint.Addresses {
@@ -841,25 +782,31 @@ func getEligibleEndpointAddresses(endpointSlices []*discovery.EndpointSlice, ser
 		}
 	}
 
-	return endpointsAddresses
+	return sets.List(endpointsAddresses)
 }
 
-// GetEligibleEndpointAddresses returns a list of IP addresses of all eligible endpoints from the given endpoint slices.
-func GetEligibleEndpointAddresses(endpointSlices []*discovery.EndpointSlice, service *kapi.Service) sets.Set[string] {
-	return getEligibleEndpointAddresses(endpointSlices, service, "")
+func GetEligibleEndpointAddresses(endpoints []discovery.Endpoint, service *kapi.Service) []string {
+	return getEligibleEndpointAddresses(endpoints, service, "")
 }
 
-// GetLocalEligibleEndpointAddresses returns a list of IP address of endpoints that are local to the specified node
+// GetEligibleEndpointAddressesFromSlices returns a list of IP addresses of all eligible endpoints from the given endpoint slices.
+func GetEligibleEndpointAddressesFromSlices(endpointSlices []*discovery.EndpointSlice, service *kapi.Service) []string {
+	return getEligibleEndpointAddresses(getEndpointsFromEndpointSlices(endpointSlices), service, "")
+}
+
+// GetLocalEligibleEndpointAddressesFromSlices returns a set of IP addresses of endpoints that are local to the specified node
 // and are eligible.
-func GetLocalEligibleEndpointAddresses(endpointSlices []*discovery.EndpointSlice, service *kapi.Service, nodeName string) sets.Set[string] {
-	return getEligibleEndpointAddresses(endpointSlices, service, nodeName)
+func GetLocalEligibleEndpointAddressesFromSlices(endpointSlices []*discovery.EndpointSlice, service *kapi.Service, nodeName string) sets.Set[string] {
+	endpoints := getEligibleEndpointAddresses(getEndpointsFromEndpointSlices(endpointSlices), service, nodeName)
+	return sets.New(endpoints...)
 }
 
 // DoesEndpointSliceContainEndpoint returns true if the endpointslice
 // contains an endpoint with the given IP, port and Protocol and if this endpoint is considered eligible.
 func DoesEndpointSliceContainEligibleEndpoint(endpointSlice *discovery.EndpointSlice,
 	epIP string, epPort int32, protocol kapi.Protocol, service *kapi.Service) bool {
-	for _, ep := range getEligibleEndpoints([]*discovery.EndpointSlice{endpointSlice}, service) {
+	endpoints := getEndpointsFromEndpointSlices([]*discovery.EndpointSlice{endpointSlice})
+	for _, ep := range getEligibleEndpoints(endpoints, service) {
 		for _, ip := range ep.Addresses {
 			for _, port := range endpointSlice.Ports {
 				if utilnet.ParseIPSloppy(ip).String() == epIP && *port.Port == epPort && *port.Protocol == protocol {
@@ -907,6 +854,14 @@ func IsHostEndpoint(endpointIPstr string) bool {
 		}
 	}
 	return true
+}
+
+func getEndpointsFromEndpointSlices(endpointSlices []*discovery.EndpointSlice) []discovery.Endpoint {
+	endpoints := []discovery.Endpoint{}
+	for _, slice := range endpointSlices {
+		endpoints = append(endpoints, slice.Endpoints...)
+	}
+	return endpoints
 }
 
 func GetConntrackZone() int {

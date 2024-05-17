@@ -256,7 +256,7 @@ func NewSecondaryLayer3NetworkController(cnci *CommonNetworkControllerInfo, netI
 		BaseSecondaryNetworkController: BaseSecondaryNetworkController{
 			BaseNetworkController: BaseNetworkController{
 				CommonNetworkControllerInfo: *cnci,
-				controllerName:              netInfo.GetNetworkName() + "-network-controller",
+				controllerName:              getNetworkControllerName(netInfo.GetNetworkName()),
 				NetInfo:                     netInfo,
 				lsManager:                   lsm.NewLogicalSwitchManager(),
 				logicalPortCache:            newPortCache(stopChan),
@@ -282,7 +282,8 @@ func NewSecondaryLayer3NetworkController(cnci *CommonNetworkControllerInfo, netI
 		podAnnotationAllocator := pod.NewPodAnnotationAllocator(
 			netInfo,
 			cnci.watchFactory.PodCoreInformer().Lister(),
-			cnci.kube)
+			cnci.kube,
+			nil)
 		oc.podAnnotationAllocator = podAnnotationAllocator
 	}
 
@@ -389,7 +390,8 @@ func (oc *SecondaryLayer3NetworkController) Cleanup(netName string) error {
 		return fmt.Errorf("failed to get ops for deleting routers of network %s: %v", netName, err)
 	}
 
-	ops, err = cleanupPolicyLogicalEntities(oc.nbClient, ops, netName)
+	controllerName := getNetworkControllerName(netName)
+	ops, err = cleanupPolicyLogicalEntities(oc.nbClient, ops, controllerName)
 	if err != nil {
 		return err
 	}

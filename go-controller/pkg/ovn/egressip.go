@@ -883,7 +883,7 @@ func (oc *DefaultNetworkController) syncStaleAddressSetIPs(egressIPCache map[str
 	}
 	// we replace all IPs in the address-set based on eIP cache constructed from kapi
 	// note that setIPs is not thread-safe
-	if err = as.SetIPs(allEIPServedPodIPs); err != nil {
+	if err = as.SetAddresses(util.StringSlice(allEIPServedPodIPs)); err != nil {
 		return fmt.Errorf("cannot reset egressPodIPs in address set %v: err: %v", EgressIPServedPodsAddrSetName, err)
 	}
 	return nil
@@ -1248,26 +1248,6 @@ func (oc *DefaultNetworkController) addEgressNode(node *v1.Node) error {
 	}
 	if oc.isLocalZoneNode(node) {
 		klog.V(5).Infof("Egress node: %s about to be initialized", node.Name)
-		// This option will program OVN to start sending GARPs for all external IPS
-		// that the logical switch port has been configured to use. This is
-		// necessary for egress IP because if an egress IP is moved between two
-		// nodes, the nodes need to actively update the ARP cache of all neighbors
-		// as to notify them the change. If this is not the case: packets will
-		// continue to be routed to the old node which hosted the egress IP before
-		// it was moved, and the connections will fail.
-		portName := types.EXTSwitchToGWRouterPrefix + types.GWRouterPrefix + node.Name
-		lsp := nbdb.LogicalSwitchPort{
-			Name: portName,
-			// Setting nat-addresses to router will send out GARPs for all externalIPs and LB VIPs
-			// hosted on the GR. Setting exclude-lb-vips-from-garp to true will make sure GARPs for
-			// LB VIPs are not sent, thereby preventing GARP overload.
-			Options: map[string]string{"nat-addresses": "router", "exclude-lb-vips-from-garp": "true"},
-		}
-		err := libovsdbops.UpdateLogicalSwitchPortSetOptions(oc.nbClient, &lsp)
-		if err != nil {
-			return fmt.Errorf("unable to configure GARP on external logical switch port for egress node: %s, "+
-				"this will result in packet drops during egress IP re-assignment,  err: %v", node.Name, err)
-		}
 		if config.OVNKubernetesFeature.EnableInterconnect && oc.zone != types.OvnDefaultZone {
 			// NOTE: EgressIP is not supported on multi-nodes-in-same-zone case
 			// NOTE2: We don't want this route for all-nodes-in-same-zone (almost nonIC a.k.a single zone) case because
@@ -1278,31 +1258,6 @@ func (oc *DefaultNetworkController) addEgressNode(node *v1.Node) error {
 			if err := libovsdbutil.CreateDefaultRouteToExternal(oc.nbClient, node.Name); err != nil {
 				return err
 			}
-		}
-	}
-	return nil
-}
-
-func (oc *DefaultNetworkController) deleteEgressNode(node *v1.Node) error {
-	if node == nil {
-		return nil
-	}
-	if oc.isLocalZoneNode(node) {
-		klog.V(5).Infof("Egress node: %s about to be removed", node.Name)
-		// This will remove the option described in addEgressNode from the logical
-		// switch port, since this node will not be used for egress IP assignments
-		// from now on.
-		portName := types.EXTSwitchToGWRouterPrefix + types.GWRouterPrefix + node.Name
-		lsp := nbdb.LogicalSwitchPort{
-			Name:    portName,
-			Options: map[string]string{"nat-addresses": "", "exclude-lb-vips-from-garp": ""},
-		}
-		err := libovsdbops.UpdateLogicalSwitchPortSetOptions(oc.nbClient, &lsp)
-		if errors.Is(err, libovsdbclient.ErrNotFound) {
-			// if the LSP setup is already gone, then don't count it as error.
-			klog.Warningf("Unable to remove GARP configuration on external logical switch port for egress node: %s, err: %v", node.Name, err)
-		} else if err != nil {
-			return fmt.Errorf("unable to remove GARP configuration on external logical switch port for egress node: %s, err: %v", node.Name, err)
 		}
 	}
 	return nil
@@ -1956,7 +1911,7 @@ func (oc *DefaultNetworkController) addPodIPsToAddressSet(addrSetIPs []net.IP) e
 	if err != nil {
 		return fmt.Errorf("cannot ensure that addressSet %s exists %v", EgressIPServedPodsAddrSetName, err)
 	}
-	if err := as.AddIPs(addrSetIPs); err != nil {
+	if err := as.AddAddresses(util.StringSlice(addrSetIPs)); err != nil {
 		return fmt.Errorf("cannot add egressPodIPs %v from the address set %v: err: %v", addrSetIPs, EgressIPServedPodsAddrSetName, err)
 	}
 	return nil
@@ -1968,7 +1923,7 @@ func (oc *DefaultNetworkController) deletePodIPsFromAddressSet(addrSetIPs []net.
 	if err != nil {
 		return fmt.Errorf("cannot ensure that addressSet %s exists %v", EgressIPServedPodsAddrSetName, err)
 	}
-	if err := as.DeleteIPs(addrSetIPs); err != nil {
+	if err := as.DeleteAddresses(util.StringSlice(addrSetIPs)); err != nil {
 		return fmt.Errorf("cannot delete egressPodIPs %v from the address set %v: err: %v", addrSetIPs, EgressIPServedPodsAddrSetName, err)
 	}
 	return nil
@@ -2044,7 +1999,7 @@ func ensureDefaultNoRerouteNodePolicies(nbClient libovsdbclient.Client, addressS
 		return fmt.Errorf("cannot ensure that addressSet %s exists %v", NodeIPAddrSetName, err)
 	}
 
-	if err = as.SetIPs(allAddresses); err != nil {
+	if err = as.SetAddresses(util.StringSlice(allAddresses)); err != nil {
 		return fmt.Errorf("unable to set IPs to no re-route address set %s: %w", NodeIPAddrSetName, err)
 	}
 

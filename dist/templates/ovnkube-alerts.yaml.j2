@@ -95,38 +95,6 @@ spec:
          The pod creation latency aggregated across all masters for the last 
          15minutes is more than 5 seconds as compared to 15 minutes before last 15 minutes.
 
-    - alert: OvnKubeHighNBCliLatency99thPercentile
-      expr: |
-        histogram_quantile(0.99,
-          sum by (le) (
-            rate(ovnkube_controller_ovn_cli_latency_seconds_bucket{
-              command="ovn-nbctl"}[15m])
-          )
-        ) > 3 
-      for: 10m
-      labels:
-       severity: warning
-      annotations:
-       description: |
-         The ovn-nbctl 99th percentile CLI latency {{ value }} aggregated 
-         across all masters for the last 15minutes is more than 3 seconds.
-
-    - alert: OvnKubeHighSBCliLatency99thPercentile
-      expr: |
-        histogram_quantile(0.99,
-          sum by (le) (
-            rate(ovnkube_controller_ovn_cli_latency_seconds_bucket{
-              command="ovn-sbctl"}[15m])
-          )
-        ) > 3
-      for: 10m
-      labels:
-       severity: warning
-      annotations:
-       description: |
-         The ovn-sbctl 99th percentile CLI latency {{ value }} aggregated
-         across all masters for the last 15minutes is more than 3 seconds.
-
     - alert: OvnKubeHighK8sNetworkPolicyUpdateLatency99thPercentile
       expr: |
         histogram_quantile(0.99,
@@ -190,6 +158,20 @@ spec:
        description: |
          The 99th percentile {{ $labels.name }} update latency {{ value }} aggregated
          across all masters for the last 15minutes is more than 1 seconds.
+
+    # The logfile size is in bytes. We first convert it into MiB. Then, we collect last 15 minutes of
+    # the time series data and check if the rate at which the log file is increasing is more than 1MB
+    # over the last 5 minutes.
+    - alert: OvnKubeNodeLogFileSize
+      expr: |
+        rate(ovnkube_node_logfile_size_bytes{namespace="ovn-kubernetes", job="ovnkube-node"}[15m]) * 5 * 60 / 1024 / 1024 > 1
+      for: 10m
+      labels:
+       severity: warning
+      annotations:
+       message: |
+         Pod ovn-kubernetes/ {{ $labels.pod }} {{ $labels.logfile_name }} file size is
+         increasing {{ printf "%.2f" $value }} Mb / 5 minutes for the last 10 minutes
 
     - alert: OvnNBDBStale
       expr: time() - max(ovnkube_controller_nb_e2e_timestamp) > 120
@@ -365,5 +347,26 @@ spec:
          {{ range query "ovn_controller_integration_bridge_geneve_ports_total{job='ovnkube-node', namespace='ovn-kubernetes'} !=  scalar(count(kube_node_info)) - 1" }}
          {{ .Labels.instance }}: {{ .Value }}
          {{ end }}.
- 
+
+    - alert: OVNKubeAllocatedV4SubnetsDoNotMatch
+      expr: |
+        ovnkube_clustermanager_allocated_v4_host_subnets{job="ovnkube-master", namespace="ovn-kubernetes"} > 0 and
+        ovnkube_clustermanager_allocated_v4_host_subnets{job="ovnkube-master", namespace="ovn-kubernetes"} != scalar(sum(kube_node_info))
+      for: 10m
+      labels:
+       severity: major
+      annotations:
+       message: |
+         ovnkube clustermanager allocated IPv4 host subnets value for {{ $labels.network_name }} network should be same as the number of K8s nodes
+
+    - alert: OVNKubeAllocatedV6SubnetsDoNotMatch
+      expr: |
+        ovnkube_clustermanager_allocated_v6_host_subnets{job="ovnkube-master", namespace="ovn-kubernetes"} > 0 and
+        ovnkube_clustermanager_allocated_v6_host_subnets{job="ovnkube-master", namespace="ovn-kubernetes"} != scalar(sum(kube_node_info))
+      for: 10m
+      labels:
+       severity: major
+      annotations:
+       message: |
+         ovnkube clustermanager allocated IPv6 host subnets value for {{ $labels.network_name }} network should be same as the number of K8s nodes
 

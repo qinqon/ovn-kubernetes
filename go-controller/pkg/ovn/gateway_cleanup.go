@@ -20,7 +20,7 @@ import (
 )
 
 // gatewayCleanup removes all the NB DB objects created for a node's gateway
-func (oc *DefaultNetworkController) gatewayCleanup(nodeName string) error {
+func (oc *BaseNetworkController) gatewayCleanup(nodeName, joinSwitchName string) error {
 	gatewayRouter := types.GWRouterPrefix + nodeName
 
 	// Get the gateway router port's IP address (connected to join switch)
@@ -40,10 +40,10 @@ func (oc *DefaultNetworkController) gatewayCleanup(nodeName string) error {
 	// Remove the patch port that connects join switch to gateway router
 	portName := types.JoinSwitchToGWRouterPrefix + gatewayRouter
 	lsp := nbdb.LogicalSwitchPort{Name: portName}
-	sw := nbdb.LogicalSwitch{Name: types.OVNJoinSwitch}
+	sw := nbdb.LogicalSwitch{Name: joinSwitchName}
 	err = libovsdbops.DeleteLogicalSwitchPorts(oc.nbClient, &sw, &lsp)
 	if err != nil && !errors.Is(err, libovsdbclient.ErrNotFound) {
-		return fmt.Errorf("failed to delete logical switch port %s from switch %s: %w", portName, types.OVNJoinSwitch, err)
+		return fmt.Errorf("failed to delete logical switch port %s from switch %s: %w", portName, joinSwitchName, err)
 	}
 
 	// Remove the logical router port on the gateway router that connects to the join switch
@@ -86,7 +86,7 @@ func (oc *DefaultNetworkController) gatewayCleanup(nodeName string) error {
 	return nil
 }
 
-func (oc *DefaultNetworkController) delPbrAndNatRules(nodeName string, lrpTypes []string) {
+func (oc *BaseNetworkController) delPbrAndNatRules(nodeName string, lrpTypes []string) {
 	// delete the dnat_and_snat entry that we added for the management port IP
 	// Note: we don't need to delete any MAC bindings that are dynamically learned from OVN SB DB
 	// because there will be none since this NAT is only for outbound traffic and not for inbound
@@ -104,7 +104,7 @@ func (oc *DefaultNetworkController) delPbrAndNatRules(nodeName string, lrpTypes 
 	oc.removeLRPolicies(nodeName, lrpTypes)
 }
 
-func (oc *DefaultNetworkController) staticRouteCleanup(nextHops []net.IP) {
+func (oc *BaseNetworkController) staticRouteCleanup(nextHops []net.IP) {
 	ips := sets.Set[string]{}
 	for _, nextHop := range nextHops {
 		ips.Insert(nextHop.String())
@@ -124,7 +124,7 @@ func (oc *DefaultNetworkController) staticRouteCleanup(nextHops []net.IP) {
 // the specified gatewayRouterIP from nexthops
 // - if the LRP exists and has the len(nexthops) == 1: it removes
 // the LRP completely
-func (oc *DefaultNetworkController) policyRouteCleanup(nextHops []net.IP) {
+func (oc *BaseNetworkController) policyRouteCleanup(nextHops []net.IP) {
 	for _, nextHop := range nextHops {
 		gwIP := nextHop.String()
 		policyPred := func(item *nbdb.LogicalRouterPolicy) bool {
@@ -144,7 +144,7 @@ func (oc *DefaultNetworkController) policyRouteCleanup(nextHops []net.IP) {
 
 // remove Logical Router Policy on ovn_cluster_router for a specific node.
 // Specify priorities to only delete specific types
-func (oc *DefaultNetworkController) removeLRPolicies(nodeName string, priorities []string) {
+func (oc *BaseNetworkController) removeLRPolicies(nodeName string, priorities []string) {
 	if len(priorities) == 0 {
 		priorities = []string{types.NodeSubnetPolicyPriority}
 	}

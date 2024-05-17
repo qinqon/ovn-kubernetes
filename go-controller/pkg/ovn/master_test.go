@@ -23,6 +23,7 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kube"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kubevirt"
 	libovsdbops "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdb/ops"
+	libovsdbutil "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdb/util"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/nbdb"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/retry"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/sbdb"
@@ -1452,6 +1453,46 @@ var _ = ginkgo.Describe("Default network controller operations", func() {
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 	})
 
+	ginkgo.It("doesn't retry deleting a node that doesn't have a node-subnet annotation", func() {
+		app.Action = func(ctx *cli.Context) error {
+			_, err := config.InitConfig(ctx, nil, nil)
+			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			startFakeController(oc, wg)
+			newNode := &v1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:        "newNode",
+					Annotations: map[string]string{},
+				},
+			}
+			ginkgo.By("create new node with no host-subnet annotation defined and ensure theres a retry entry")
+			_, err = kubeFakeClient.CoreV1().Nodes().Create(context.TODO(), newNode, metav1.CreateOptions{})
+			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			retry.CheckRetryObjectMultipleFieldsEventually(
+				newNode.Name,
+				oc.retryNodes,
+				gomega.BeNil(),             // oldObj should be nil
+				gomega.Not(gomega.BeNil()), // newObj should not be nil
+			)
+			keyExists := true
+			retry.CheckRetryObjectEventually(newNode.Name, keyExists, oc.retryNodes)
+			ginkgo.By("delete node and check that there are no retries for the deleted node")
+			err = kubeFakeClient.CoreV1().Nodes().Delete(context.TODO(), newNode.Name, metav1.DeleteOptions{})
+			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			retry.CheckRetryObjectEventually(newNode.Name, !keyExists, oc.retryNodes)
+			ginkgo.By("ensure failures for sync host network address or adding nodes are cleared")
+			gomega.Eventually(func() bool {
+				_, foundSyncHostNetAddrSetFailed := oc.syncHostNetAddrSetFailed.Load(newNode.Name)
+				_, foundAddNodeFailed := oc.addNodeFailed.Load(newNode.Name)
+				return foundSyncHostNetAddrSetFailed || foundAddNodeFailed
+			}).Should(gomega.BeFalse())
+			return nil
+		}
+		err := app.Run([]string{
+			app.Name,
+		})
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+	})
+
 	ginkgo.It("delete a partially constructed node", func() {
 		app.Action = func(ctx *cli.Context) error {
 			_, err := config.InitConfig(ctx, nil, nil)
@@ -1757,14 +1798,14 @@ var _ = ginkgo.Describe("Default network controller operations", func() {
 			lrpip, _, _ := net.ParseCIDR(lrpips[0].String())
 			ips = append(ips, lrpip.String())
 
-			fakeOvn.asf.EventuallyExpectAddressSetWithIPs(config.Kubernetes.HostNetworkNamespace, ips)
+			fakeOvn.asf.EventuallyExpectAddressSetWithAddresses(config.Kubernetes.HostNetworkNamespace, ips)
 
 			// Delete the node and check whether the address_set is empty or not
 			err = fakeOvn.fakeClient.KubeClient.CoreV1().Nodes().Delete(context.TODO(), testNode.Name, metav1.DeleteOptions{})
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
 			var emptyAddress []string
-			fakeOvn.asf.EventuallyExpectAddressSetWithIPs(config.Kubernetes.HostNetworkNamespace, emptyAddress)
+			fakeOvn.asf.EventuallyExpectAddressSetWithAddresses(config.Kubernetes.HostNetworkNamespace, emptyAddress)
 
 			return nil
 		}
@@ -1795,23 +1836,19 @@ func newClusterJoinSwitch() *nbdb.LogicalSwitch {
 }
 
 func newClusterPortGroup() *nbdb.PortGroup {
-	return &nbdb.PortGroup{
-		UUID: types.ClusterPortGroupNameBase + "-UUID",
-		Name: types.ClusterPortGroupNameBase,
-		ExternalIDs: map[string]string{
-			"name": types.ClusterPortGroupNameBase,
-		},
-	}
+	fakeController := getFakeController(DefaultNetworkControllerName)
+	pgIDs := fakeController.getClusterPortGroupDbIDs(types.ClusterPortGroupNameBase)
+	pg := libovsdbutil.BuildPortGroup(pgIDs, nil, nil)
+	pg.UUID = pgIDs.String()
+	return pg
 }
 
 func newRouterPortGroup() *nbdb.PortGroup {
-	return &nbdb.PortGroup{
-		UUID: types.ClusterRtrPortGroupNameBase + "-UUID",
-		Name: types.ClusterRtrPortGroupNameBase,
-		ExternalIDs: map[string]string{
-			"name": types.ClusterRtrPortGroupNameBase,
-		},
-	}
+	fakeController := getFakeController(DefaultNetworkControllerName)
+	pgIDs := fakeController.getClusterPortGroupDbIDs(types.ClusterRtrPortGroupNameBase)
+	pg := libovsdbutil.BuildPortGroup(pgIDs, nil, nil)
+	pg.UUID = pgIDs.String()
+	return pg
 }
 
 func newOVNClusterRouter() *nbdb.LogicalRouter {

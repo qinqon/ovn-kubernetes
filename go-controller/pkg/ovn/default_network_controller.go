@@ -3,7 +3,6 @@ package ovn
 import (
 	"context"
 	"fmt"
-	"net"
 	"reflect"
 	"sync"
 	"time"
@@ -22,8 +21,10 @@ import (
 	egresssvc "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/controller/egressservice"
 	svccontroller "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/controller/services"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/controller/unidling"
+	dnsnameresolver "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/dns_name_resolver"
 	aclsyncer "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/external_ids_syncer/acl"
 	addrsetsyncer "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/external_ids_syncer/address_set"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/external_ids_syncer/port_group"
 	lsm "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/logical_switch_manager"
 	zoneic "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/zone_interconnect"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/retry"
@@ -71,20 +72,9 @@ type DefaultNetworkController struct {
 	egressQoSNodeSynced cache.InformerSynced
 	egressQoSNodeQueue  workqueue.RateLimitingInterface
 
-	// Cluster wide Load_Balancer_Group UUID.
-	// Includes all node switches and node gateway routers.
-	clusterLoadBalancerGroupUUID string
-
 	// Cluster wide switch Load_Balancer_Group UUID.
 	// Includes all node switches.
 	switchLoadBalancerGroupUUID string
-
-	// Cluster wide router Load_Balancer_Group UUID.
-	// Includes all node gateway routers.
-	routerLoadBalancerGroupUUID string
-
-	// Cluster-wide router default Control Plane Protection (COPP) UUID
-	defaultCOPPUUID string
 
 	// Controller used for programming OVN for egress IP
 	eIPC egressIPZoneController
@@ -99,7 +89,9 @@ type DefaultNetworkController struct {
 	// Controller used to handle the admin policy based external route resources
 	apbExternalRouteController *apbroutecontroller.ExternalGatewayMasterController
 
-	egressFirewallDNS *EgressDNS
+	// dnsNameResolver is used for resolving the IP addresses of DNS names
+	// used in egress firewall rules
+	dnsNameResolver dnsnameresolver.DNSNameResolver
 
 	// retry framework for egress firewall
 	retryEgressFirewalls *retry.RetryFramework
@@ -127,10 +119,6 @@ type DefaultNetworkController struct {
 	// variable to determine if all pods present on the node during startup have been processed
 	// updated atomically
 	allInitialPodsProcessed uint32
-
-	// IP addresses of OVN Cluster logical router port ("GwRouterToJoinSwitchPrefix + OVNClusterRouter")
-	// connecting to the join switch
-	ovnClusterLRPToJoinIfAddrs []*net.IPNet
 
 	// zoneChassisHandler handles the local node and remote nodes in creating or updating the chassis entries in the OVN Southbound DB.
 	// Please see zone_interconnect/chassis_handler.go for more details.
@@ -188,22 +176,24 @@ func newDefaultNetworkControllerCommon(cnci *CommonNetworkControllerInfo,
 
 	oc := &DefaultNetworkController{
 		BaseNetworkController: BaseNetworkController{
-			CommonNetworkControllerInfo: *cnci,
-			controllerName:              DefaultNetworkControllerName,
-			NetInfo:                     &util.DefaultNetInfo{},
-			lsManager:                   lsm.NewLogicalSwitchManager(),
-			logicalPortCache:            newPortCache(defaultStopChan),
-			namespaces:                  make(map[string]*namespaceInfo),
-			namespacesMutex:             sync.Mutex{},
-			addressSetFactory:           addressSetFactory,
-			networkPolicies:             syncmap.NewSyncMap[*networkPolicy](),
-			sharedNetpolPortGroups:      syncmap.NewSyncMap[*defaultDenyPortGroups](),
-			podSelectorAddressSets:      syncmap.NewSyncMap[*PodSelectorAddressSet](),
-			stopChan:                    defaultStopChan,
-			wg:                          defaultWg,
-			localZoneNodes:              &sync.Map{},
-			zoneICHandler:               zoneICHandler,
-			cancelableCtx:               util.NewCancelableContext(),
+			CommonNetworkControllerInfo:  *cnci,
+			controllerName:               DefaultNetworkControllerName,
+			NetInfo:                      &util.DefaultNetInfo{},
+			lsManager:                    lsm.NewLogicalSwitchManager(),
+			logicalPortCache:             newPortCache(defaultStopChan),
+			namespaces:                   make(map[string]*namespaceInfo),
+			namespacesMutex:              sync.Mutex{},
+			addressSetFactory:            addressSetFactory,
+			networkPolicies:              syncmap.NewSyncMap[*networkPolicy](),
+			sharedNetpolPortGroups:       syncmap.NewSyncMap[*defaultDenyPortGroups](),
+			podSelectorAddressSets:       syncmap.NewSyncMap[*PodSelectorAddressSet](),
+			stopChan:                     defaultStopChan,
+			wg:                           defaultWg,
+			localZoneNodes:               &sync.Map{},
+			zoneICHandler:                zoneICHandler,
+			cancelableCtx:                util.NewCancelableContext(),
+			clusterLoadBalancerGroupUUID: "",
+			routerLoadBalancerGroupUUID:  "",
 		},
 		externalGatewayRouteInfo: apbExternalRouteController.ExternalGWRouteInfoCache,
 		eIPC: egressIPZoneController{
@@ -214,13 +204,11 @@ func newDefaultNetworkControllerCommon(cnci *CommonNetworkControllerInfo,
 			watchFactory:       cnci.watchFactory,
 			nodeZoneState:      syncmap.NewSyncMap[bool](),
 		},
-		loadbalancerClusterCache:     make(map[kapi.Protocol]string),
-		clusterLoadBalancerGroupUUID: "",
-		switchLoadBalancerGroupUUID:  "",
-		routerLoadBalancerGroupUUID:  "",
-		svcController:                svcController,
-		zoneChassisHandler:           zoneChassisHandler,
-		apbExternalRouteController:   apbExternalRouteController,
+		loadbalancerClusterCache:    make(map[kapi.Protocol]string),
+		switchLoadBalancerGroupUUID: "",
+		svcController:               svcController,
+		zoneChassisHandler:          zoneChassisHandler,
+		apbExternalRouteController:  apbExternalRouteController,
 	}
 
 	// Allocate IPs for logical router port "GwRouterToJoinSwitchPrefix + OVNClusterRouter". This should always
@@ -280,9 +268,10 @@ func (oc *DefaultNetworkController) newRetryFramework(
 	return r
 }
 
-func (oc *DefaultNetworkController) syncAddressSetsAndAcls() error {
-	// sync address sets, only required for network controller, since any old objects in the db without
+func (oc *DefaultNetworkController) syncDb() error {
+	// sync address sets and ACLs, only required for network controller, since any old objects in the db without
 	// Owner set are owned by the default network controller.
+	// The order of syncs is important, since the next syncer may rely on the data updated by the previous one.
 	addrSetSyncer := addrsetsyncer.NewAddressSetSyncer(oc.nbClient, oc.controllerName)
 	err := addrSetSyncer.SyncAddressSets()
 	if err != nil {
@@ -299,6 +288,16 @@ func (oc *DefaultNetworkController) syncAddressSetsAndAcls() error {
 		return fmt.Errorf("failed to sync acls on controller init: %v", err)
 	}
 
+	// port groups should be synced only once across all controllers (as port groups were used by secondary network
+	// controllers before dbIDs, but SyncPortGroups knows how to get this info from the old ExternalIDs, that is also
+	// why it doesn't have controllerName as an argument).
+	// Do it here since DefaultNetworkController is always created, and this sync has dependencies with the other syncs
+	// in this function. It uses acl.ExternalIDs[libovsdbops.ObjectNameKey.String()] to fetch namespace name for a
+	// referenced port group (thus, SyncACLs should be called before).
+	portGroupSyncer := port_group.NewPortGroupSyncer(oc.nbClient)
+	if err = portGroupSyncer.SyncPortGroups(); err != nil {
+		return fmt.Errorf("failed to sync port groups on controller init: %v", err)
+	}
 	// sync shared resources
 	// pod selector address sets
 	err = oc.cleanupPodSelectorAddressSets()
@@ -312,7 +311,7 @@ func (oc *DefaultNetworkController) syncAddressSetsAndAcls() error {
 func (oc *DefaultNetworkController) Start(ctx context.Context) error {
 	klog.Infof("Starting the default network controller")
 
-	err := oc.syncAddressSetsAndAcls()
+	err := oc.syncDb()
 	if err != nil {
 		return err
 	}
@@ -325,6 +324,7 @@ func (oc *DefaultNetworkController) Start(ctx context.Context) error {
 
 // Stop gracefully stops the controller
 func (oc *DefaultNetworkController) Stop() {
+	oc.dnsNameResolver.Shutdown()
 	close(oc.stopChan)
 	oc.cancelableCtx.Cancel()
 	oc.wg.Wait()
@@ -485,11 +485,22 @@ func (oc *DefaultNetworkController) Run(ctx context.Context) error {
 
 	if config.OVNKubernetesFeature.EnableEgressFirewall {
 		var err error
-		oc.egressFirewallDNS, err = NewEgressDNS(oc.addressSetFactory, oc.controllerName, oc.stopChan)
+		// If DNSNameResolver is enabled, then initialize dnsNameResolver to ExternalEgressDNS
+		// for maintaining the address sets corresponding to the DNS names and start watching
+		// DNSNameResolver resources. Otherwise initialize dnsNameResolver to EgressDNS.
+		if config.OVNKubernetesFeature.EnableDNSNameResolver {
+			oc.dnsNameResolver, err = dnsnameresolver.NewExternalEgressDNS(oc.addressSetFactory, oc.controllerName, true,
+				oc.watchFactory.DNSNameResolverInformer().Informer(), oc.watchFactory.EgressFirewallInformer().Lister())
+		} else {
+			oc.dnsNameResolver, err = dnsnameresolver.NewEgressDNS(oc.addressSetFactory, oc.controllerName, oc.stopChan, egressFirewallDNSDefaultDuration)
+		}
 		if err != nil {
 			return err
 		}
-		oc.egressFirewallDNS.Run(egressFirewallDNSDefaultDuration)
+		err = oc.dnsNameResolver.Run()
+		if err != nil {
+			return err
+		}
 		err = WithSyncDurationMetric("egress firewall", oc.WatchEgressFirewall)
 		if err != nil {
 			return err
@@ -561,6 +572,8 @@ func (oc *DefaultNetworkController) Run(ctx context.Context) error {
 			unidlingController.Run(oc.stopChan)
 		}()
 	}
+
+	metrics.RunOVNKubeFeatureDBObjectsMetricsUpdater(oc.nbClient, oc.controllerName, 30*time.Second, oc.stopChan)
 
 	return nil
 }
@@ -809,12 +822,8 @@ func (h *defaultNetworkControllerEventHandler) AddResource(obj interface{}, from
 		if err != nil {
 			return err
 		}
-		// add the GARP configuration for all the new nodes we get
-		// since we use the "exclude-lb-vips-from-garp": "true"
-		// we shouldn't have scale issues
-		// NOTE: Adding GARP needs to be done only during node add
-		// It is a one time operation and doesn't need to be done during
-		// node updates. It needs to be done only for nodes local to this zone
+		// Add routing specific to Egress IP NOTE: GARP configuration that
+		// Egress IP depends on is added from the gateway reconciliation logic
 		return h.oc.addEgressNode(node)
 
 	case factory.EgressFwNodeType:
@@ -1052,10 +1061,6 @@ func (h *defaultNetworkControllerEventHandler) DeleteResource(obj, cachedObj int
 
 	case factory.EgressNodeType:
 		node := obj.(*kapi.Node)
-		// remove the GARP setup for the node
-		if err := h.oc.deleteEgressNode(node); err != nil {
-			return err
-		}
 		// remove the IPs from the destination address-set of the default LRP (102)
 		err := h.oc.ensureDefaultNoRerouteNodePolicies()
 		if err != nil {

@@ -155,6 +155,9 @@ func (h *baseSecondaryLayer2NetworkControllerEventHandler) SyncFunc(objs []inter
 		case factory.MultiNetworkPolicyType:
 			syncFunc = h.oc.syncMultiNetworkPolicies
 
+		case factory.IPAMClaimsType:
+			syncFunc = h.oc.syncIPAMClaims
+
 		default:
 			return fmt.Errorf("no sync function for object type %s", h.objType)
 		}
@@ -180,6 +183,9 @@ type BaseSecondaryLayer2NetworkController struct {
 func (oc *BaseSecondaryLayer2NetworkController) initRetryFramework() {
 	oc.retryNodes = oc.newRetryFramework(factory.NodeType)
 	oc.retryPods = oc.newRetryFramework(factory.PodType)
+	if oc.allocatesPodAnnotation() && oc.NetInfo.AllowsPersistentIPs() {
+		oc.retryIPAMClaims = oc.newRetryFramework(factory.IPAMClaimsType)
+	}
 
 	// For secondary networks, we don't have to watch namespace events if
 	// multi-network policy support is not enabled. We don't support
@@ -221,6 +227,9 @@ func (oc *BaseSecondaryLayer2NetworkController) stop() {
 	oc.cancelableCtx.Cancel()
 	oc.wg.Wait()
 
+	if oc.ipamClaimsHandler != nil {
+		oc.watchFactory.RemoveIPAMClaimsHandler(oc.ipamClaimsHandler)
+	}
 	if oc.policyHandler != nil {
 		oc.watchFactory.RemoveMultiNetworkPolicyHandler(oc.policyHandler)
 	}
@@ -238,6 +247,12 @@ func (oc *BaseSecondaryLayer2NetworkController) stop() {
 // cleanup cleans up logical entities for the given network, called from net-attach-def routine
 // could be called from a dummy Controller (only has CommonNetworkControllerInfo set)
 func (oc *BaseSecondaryLayer2NetworkController) cleanup(topotype, netName string) error {
+	if oc.isLayer2Interconnect() {
+		err := oc.zoneICHandler.Cleanup()
+		if err != nil {
+			return err
+		}
+	}
 	// delete layer 2 logical switches
 	ops, err := libovsdbops.DeleteLogicalSwitchesWithPredicateOps(oc.nbClient, nil,
 		func(item *nbdb.LogicalSwitch) bool {
@@ -247,7 +262,8 @@ func (oc *BaseSecondaryLayer2NetworkController) cleanup(topotype, netName string
 		return fmt.Errorf("failed to get ops for deleting switches of network %s: %v", netName, err)
 	}
 
-	ops, err = cleanupPolicyLogicalEntities(oc.nbClient, ops, netName)
+	controllerName := getNetworkControllerName(netName)
+	ops, err = cleanupPolicyLogicalEntities(oc.nbClient, ops, controllerName)
 	if err != nil {
 		return err
 	}
@@ -269,6 +285,17 @@ func (oc *BaseSecondaryLayer2NetworkController) run() error {
 
 	if err := oc.WatchNodes(); err != nil {
 		return err
+	}
+
+	// when on IC, it will be the NetworkController that returns the IPAMClaims
+	// IPs back to the pool
+	if oc.allocatesPodAnnotation() && oc.allowPersistentIPs() {
+		// WatchIPAMClaims should be started before WatchPods to prevent OVN-K
+		// master assigning IPs to pods without taking into account the persistent
+		// IPs set aside for the IPAMClaims
+		if err := oc.WatchIPAMClaims(); err != nil {
+			return err
+		}
 	}
 
 	if err := oc.WatchPods(); err != nil {
@@ -330,8 +357,38 @@ func (oc *BaseSecondaryLayer2NetworkController) addUpdateNodeEvent(node *corev1.
 }
 
 func (oc *BaseSecondaryLayer2NetworkController) addUpdateLocalNodeEvent(node *corev1.Node) error {
-	_, present := oc.localZoneNodes.LoadOrStore(node.Name, true)
 
+	switchName := oc.GetNetworkScopedName(types.OVNLayer2Switch)
+	subnets := []*net.IPNet{}
+	for _, subnet := range oc.Subnets() {
+		subnets = append(subnets, subnet.CIDR)
+	}
+
+	gateways := []*net.IPNet{}
+	for _, subnet := range oc.Subnets() {
+		gateways = append(gateways, util.GetNodeGatewayIfAddr(subnet.CIDR))
+	}
+
+	gwLRPIPs, err := util.ParseNodeGatewayRouterLRPAddrs(node)
+	if err != nil {
+		return fmt.Errorf("failed to get join switch port IP address for node %s: %v", node.Name, err)
+	}
+	gwLRPIPs = append(gwLRPIPs, gateways...)
+
+	gwLRPMAC := util.IPAddrToHWAddr(gwLRPIPs[0].IP)
+
+	if err := oc.syncNodeGateway(node, gwLRPMAC.String(), gwLRPIPs, gateways, subnets, subnets, switchName); err != nil {
+		return fmt.Errorf("failed syncing node gateway for layer2 network %s: %w", oc.GetNetworkName(), err)
+	}
+
+	if oc.isLayer2Interconnect() {
+		err := oc.zoneICHandler.AddLocalZoneNode(node)
+		if err != nil {
+			return err
+		}
+	}
+
+	_, present := oc.localZoneNodes.LoadOrStore(node.Name, true)
 	if !present {
 		// process all pods so they are reconfigured as local
 		errs := oc.addAllPodsOnNode(node.Name)
@@ -345,6 +402,14 @@ func (oc *BaseSecondaryLayer2NetworkController) addUpdateLocalNodeEvent(node *co
 }
 
 func (oc *BaseSecondaryLayer2NetworkController) addUpdateRemoteNodeEvent(node *corev1.Node) error {
+
+	if oc.isLayer2Interconnect() {
+		err := oc.zoneICHandler.AddRemoteZoneNode(node)
+		if err != nil {
+			return err
+		}
+	}
+
 	_, present := oc.localZoneNodes.Load(node.Name)
 
 	if present {
@@ -365,6 +430,12 @@ func (oc *BaseSecondaryLayer2NetworkController) addUpdateRemoteNodeEvent(node *c
 }
 
 func (oc *BaseSecondaryLayer2NetworkController) deleteNodeEvent(node *corev1.Node) error {
+	if oc.isLayer2Interconnect() {
+		err := oc.zoneICHandler.DeleteNode(node)
+		if err != nil {
+			return err
+		}
+	}
 	oc.localZoneNodes.Delete(node.Name)
 	return nil
 }
@@ -383,4 +454,16 @@ func (oc *BaseSecondaryLayer2NetworkController) syncNodes(nodes []interface{}) e
 	}
 
 	return nil
+}
+
+func (oc *BaseSecondaryLayer2NetworkController) syncIPAMClaims(ipamClaims []interface{}) error {
+	switchName, err := oc.getExpectedSwitchName(dummyPod())
+	if err != nil {
+		return err
+	}
+	return oc.ipamClaimsReconciler.Sync(ipamClaims, oc.lsManager.ForSwitch(switchName))
+}
+
+func dummyPod() *corev1.Pod {
+	return &corev1.Pod{Spec: corev1.PodSpec{NodeName: ""}}
 }

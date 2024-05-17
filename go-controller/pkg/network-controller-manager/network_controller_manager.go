@@ -185,6 +185,7 @@ func NewNetworkControllerManager(ovnClient *util.OVNClientset, wf *factory.Watch
 			EgressServiceClient:  ovnClient.EgressServiceClient,
 			APBRouteClient:       ovnClient.AdminPolicyRouteClient,
 			EgressQoSClient:      ovnClient.EgressQoSClient,
+			IPAMClaimsClient:     ovnClient.IPAMClaimsClient,
 		},
 		stopChan:     make(chan struct{}),
 		watchFactory: wf,
@@ -223,7 +224,9 @@ func (cm *NetworkControllerManager) configureSCTPSupport() error {
 }
 
 func (cm *NetworkControllerManager) configureSvcTemplateSupport() {
-	if _, _, err := util.RunOVNNbctl("--columns=_uuid", "list", "Chassis_Template_Var"); err != nil {
+	if !config.OVNKubernetesFeature.EnableServiceTemplateSupport {
+		cm.svcTemplateSupport = false
+	} else if _, _, err := util.RunOVNNbctl("--columns=_uuid", "list", "Chassis_Template_Var"); err != nil {
 		klog.Warningf("Version of OVN in use does not support Chassis_Template_Var. " +
 			"Disabling Templates Support")
 		cm.svcTemplateSupport = false
@@ -234,7 +237,7 @@ func (cm *NetworkControllerManager) configureSvcTemplateSupport() {
 
 func (cm *NetworkControllerManager) configureMetrics(stopChan <-chan struct{}) {
 	metrics.RegisterOVNKubeControllerPerformance(cm.nbClient)
-	metrics.RegisterOVNKubeControllerFunctional()
+	metrics.RegisterOVNKubeControllerFunctional(stopChan)
 	metrics.RunTimestamp(stopChan, cm.sbClient, cm.nbClient)
 	metrics.MonitorIPSec(cm.nbClient)
 }
