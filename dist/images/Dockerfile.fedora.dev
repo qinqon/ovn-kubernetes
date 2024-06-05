@@ -28,14 +28,14 @@ RUN INSTALL_PKGS=" \
     python3-openvswitch python3-pyOpenSSL \
     autoconf automake libtool g++ gcc fedora-packager rpmdevtools \
     unbound unbound-devel groff python3-sphinx graphviz openssl openssl-devel \
-    libbpf-devel libxdp-devel numactl-devel \
+    libbpf-devel libxdp-devel numactl-devel systemtap-sdt-devel \
     checkpolicy libcap-ng-devel selinux-policy-devel" && \
     dnf install --best --refresh -y --setopt=tsflags=nodocs $INSTALL_PKGS && \
     dnf clean all && rm -rf /var/cache/dnf/*
 
 # Clone OVS Source Code.
 ARG OVS_REPO=https://github.com/openvswitch/ovs.git
-ARG OVS_BRANCH=master
+ARG OVS_BRANCH=main
 WORKDIR /root
 RUN git clone $OVS_REPO --single-branch --branch=$OVS_BRANCH
 
@@ -49,8 +49,8 @@ RUN rm rpm/rpmbuild/RPMS/x86_64/*devel*
 RUN git log -n 1
 
 # Clone OVN Source Code.
-ARG OVN_REPO=https://github.com/ovn-org/ovn.git
-ARG OVN_BRANCH=main
+ARG OVN_REPO=https://github.com/qinqon/ovn.git
+ARG OVN_BRANCH=dnm-test-skip-arp-proxy-flows-bis
 WORKDIR /root
 RUN git clone $OVN_REPO --single-branch --branch=$OVN_BRANCH
 
