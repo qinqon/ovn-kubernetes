@@ -853,8 +853,23 @@ passwd:
 			By("Wait some time for service to settle")
 			time.Sleep(2 * time.Second)
 
+			step = by(vmi.Name, "DELETEME: Create deny all network policy")
+			_, err = createDenyAllPolicy(vmi.Name)
+			Expect(err).ToNot(HaveOccurred(), step)
+
 			endpoints, err := dialServiceNodePort(svc)
 			Expect(err).ToNot(HaveOccurred(), step)
+
+			step = by(vmi.Name, "DELETEME: Sleep for deny all policy to settle")
+			time.Sleep(10 * time.Second)
+
+			step = by(vmi.Name, "DELETEME: Check connectivity block after create deny all network policy")
+			Eventually(func() error { return sendEchos(endpoints) }).
+				WithPolling(time.Second).
+				WithTimeout(5*time.Second).
+				ShouldNot(Succeed(), step)
+
+			Fail("Forced failure")
 
 			checkConnectivityAndNetworkPolicies(vm.Name, endpoints, "before live migration")
 			// Do just one migration that will fail
