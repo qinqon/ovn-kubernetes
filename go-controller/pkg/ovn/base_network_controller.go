@@ -696,8 +696,8 @@ func (bnc *BaseNetworkController) isLocalZoneNode(node *kapi.Node) bool {
 
 // getActiveNetworkForNamespace returns the active network for the given namespace
 // and is a wrapper around util.GetActiveNetworkForNamespace
-func (bnc *BaseNetworkController) getActiveNetworkForNamespace(namespace string) (string, error) {
-	return util.GetActiveNetworkForNamespace(namespace, bnc.watchFactory.NADInformer().Lister())
+func (bnc *BaseNetworkController) findActiveNetworkForNamespace(namespace string) (*util.PrimaryNetworkForNamespace, error) {
+	return util.FindActiveNetworkForNamespace(namespace, bnc.watchFactory.NADInformer().Lister())
 }
 
 // isPrimaryNetwork returns if pod's primary network is same
@@ -709,18 +709,18 @@ func (bnc *BaseNetworkController) isPrimaryNetwork(pod *kapi.Pod) (bool, error) 
 		// pod's secondary network is not its NOT primary network
 		return bnc.IsDefault(), nil
 	}
-	activeNetwork, err := bnc.getActiveNetworkForNamespace(pod.Namespace)
+	activeNetwork, err := bnc.findActiveNetworkForNamespace(pod.Namespace)
 	if err != nil {
 		return false, err
 	}
-	if activeNetwork == types.UnknownNetworkName {
+	if activeNetwork == nil {
 		err := fmt.Errorf("unable to determine what is the"+
 			"primary network for this pod %s; please remove multiple primary network"+
 			"NADs from namespace %s", pod.Name, pod.Namespace)
 		bnc.recordPodErrorEvent(pod, err)
 		return false, err
 	}
-	return activeNetwork == bnc.GetNetworkName(), nil
+	return activeNetwork.NetworkName == bnc.GetNetworkName(), nil
 }
 
 func (bnc *BaseNetworkController) isLayer2Interconnect() bool {

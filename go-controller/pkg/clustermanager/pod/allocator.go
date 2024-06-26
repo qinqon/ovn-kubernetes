@@ -100,8 +100,8 @@ func (a *PodAllocator) Init() error {
 
 // getActiveNetworkForNamespace returns the active network for the given namespace
 // and is a wrapper around util.GetActiveNetworkForNamespace
-func (a *PodAllocator) getActiveNetworkForNamespace(namespace string) (string, error) {
-	return util.GetActiveNetworkForNamespace(namespace, a.nadLister)
+func (a *PodAllocator) findActiveNetworkForNamespace(namespace string) (*util.PrimaryNetworkForNamespace, error) {
+	return util.FindActiveNetworkForNamespace(namespace, a.nadLister)
 }
 
 // isPrimaryNetwork returns if pod's primary network is same
@@ -113,18 +113,18 @@ func (a *PodAllocator) isPrimaryNetwork(pod *corev1.Pod) (bool, error) {
 		// pod's secondary network is NOT its primary network
 		return a.netInfo.IsDefault(), nil
 	}
-	activeNetwork, err := a.getActiveNetworkForNamespace(pod.Namespace)
+	activeNetwork, err := a.findActiveNetworkForNamespace(pod.Namespace)
 	if err != nil {
 		return false, err
 	}
-	if activeNetwork == types.UnknownNetworkName {
+	if activeNetwork == nil {
 		// FIXME(tssurya) emit event here; add support for
 		// recorder in the NCM controller
 		return false, fmt.Errorf("unable to determine what is the"+
 			"primary network for this pod %s; please remove multiple primary network"+
 			"NADs from namespace %s", pod.Name, pod.Namespace)
 	}
-	return activeNetwork == a.netInfo.GetNetworkName(), nil
+	return activeNetwork.NetworkName == a.netInfo.GetNetworkName(), nil
 }
 
 // Reconcile allocates or releases IPs for pods updating the pod annotation
