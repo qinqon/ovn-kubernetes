@@ -72,6 +72,14 @@ var _ = Describe("Network Segmentation", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(serverPod).NotTo(BeNil())
 
+				By("instantiating the *client* pod")
+				clientPod, err := cs.CoreV1().Pods(clientPodConfig.namespace).Create(
+					context.Background(),
+					generatePodSpec(clientPodConfig),
+					metav1.CreateOptions{},
+				)
+				Expect(err).NotTo(HaveOccurred())
+
 				By("asserting the server pod reaches the `Ready` state")
 				Eventually(func() v1.PodPhase {
 					updatedPod, err := cs.CoreV1().Pods(f.Namespace.Name).Get(context.Background(), serverPod.GetName(), metav1.GetOptions{})
@@ -80,14 +88,6 @@ var _ = Describe("Network Segmentation", func() {
 					}
 					return updatedPod.Status.Phase
 				}, 2*time.Minute, 6*time.Second).Should(Equal(v1.PodRunning))
-
-				By("instantiating the *client* pod")
-				clientPod, err := cs.CoreV1().Pods(clientPodConfig.namespace).Create(
-					context.Background(),
-					generatePodSpec(clientPodConfig),
-					metav1.CreateOptions{},
-				)
-				Expect(err).NotTo(HaveOccurred())
 
 				By("asserting the client pod reaches the `Ready` state")
 				Eventually(func() v1.PodPhase {
