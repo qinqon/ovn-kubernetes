@@ -127,7 +127,6 @@ var _ = Describe("Network Segmentation", func() {
 				"two pods connected over a L2 dualstack primary UDN",
 				networkAttachmentConfigParams{
 					name:           nadName,
-					networkName:    userDefinedNetworkName,
 					topology:       "layer2",
 					cidr:           fmt.Sprintf("%s,%s", userDefinedNetworkIPv4Subnet, userDefinedNetworkIPv6Subnet),
 					excludeCIDRs:   []string{externalServiceIPv4IP + "/32"},
@@ -149,7 +148,6 @@ var _ = Describe("Network Segmentation", func() {
 				"two pods connected over a L3 dualstack primary UDN",
 				networkAttachmentConfigParams{
 					name:           nadName,
-					networkName:    userDefinedNetworkName,
 					topology:       "layer3",
 					cidr:           fmt.Sprintf("%s,%s", userDefinedNetworkIPv4Subnet, userDefinedNetworkIPv6Subnet),
 					excludeCIDRs:   []string{externalServiceIPv4IP + "/32"},
@@ -189,7 +187,6 @@ var _ = Describe("Network Segmentation", func() {
 				"can be accessed to from the pods running in the Kubernetes cluster",
 				func(netConfigParams networkAttachmentConfigParams, clientPodConfig podConfiguration) {
 					netConfig := newNetworkAttachmentConfig(netConfigParams)
-
 					netConfig.namespace = f.Namespace.Name
 					clientPodConfig.namespace = f.Namespace.Name
 
@@ -227,7 +224,6 @@ var _ = Describe("Network Segmentation", func() {
 				Entry("by one pod with a single IPv4 address",
 					networkAttachmentConfigParams{
 						name:           userDefinedNetworkName,
-						networkName:    userDefinedNetworkName,
 						topology:       "layer2",
 						cidr:           userDefinedNetworkIPv4Subnet,
 						excludeCIDRs:   []string{externalServiceIPv4IP + "/32"},
