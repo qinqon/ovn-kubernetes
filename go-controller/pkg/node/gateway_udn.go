@@ -16,6 +16,14 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 )
 
+const (
+	// VrfDeviceSuffix vrf device suffix associated with every user defined primary network.
+	VrfDeviceSuffix = "-vrf"
+	// ctMarkUDNBase is the conntrack mark base value for user defined networks to use
+	// Each network gets its own mark == base + network-id
+	ctMarkUDNBase = 3
+)
+
 // UserDefinedNetworkGateway contains information
 // required to program a UDN at each node's
 // gateway.
@@ -29,6 +37,9 @@ type UserDefinedNetworkGateway struct {
 	node          *v1.Node
 	nodeLister    listers.NodeLister
 	kubeInterface kube.Interface
+	// masqCTMark holds the mark value for this network
+	// which is used for egress traffic in shared gateway mode
+	masqCTMark uint
 }
 
 func NewUserDefinedNetworkGateway(netInfo util.NetInfo, networkID int, node *v1.Node, nodeLister listers.NodeLister, kubeInterface kube.Interface) *UserDefinedNetworkGateway {
@@ -38,6 +49,8 @@ func NewUserDefinedNetworkGateway(netInfo util.NetInfo, networkID int, node *v1.
 		node:          node,
 		nodeLister:    nodeLister,
 		kubeInterface: kubeInterface,
+		// Generate a per network conntrack mark to be used for egress traffic.
+		masqCTMark: ctMarkUDNBase + uint(networkID),
 	}
 }
 
