@@ -40,6 +40,12 @@ type UserDefinedNetworkGateway struct {
 	// masqCTMark holds the mark value for this network
 	// which is used for egress traffic in shared gateway mode
 	masqCTMark uint
+	// stores a copy of default network's gateway so that
+	// we can leverage it from here to program UDN flows on breth0
+	// Currently we use the openflowmanager and nodeIPManager from
+	// gateway, but maybe we could invoke our own instance of these
+	// for UDNs.
+	*gateway
 }
 
 // UTILS Needed for UDN (also leveraged for default netInfo) in openflowmanager
@@ -118,7 +124,7 @@ func (netConfig *bridgeUDNConfiguration) setBridgeNetworkOfPortsInternal() error
 	ofportPatch, stderr, err := util.GetOVSOfPort("get", "Interface", netConfig.patchPort, "ofport")
 	if err != nil {
 		return fmt.Errorf("failed while waiting on patch port %q to be created by ovn-controller and "+
-			"while getting ofport. stderr: %q, error: %v", netConfig.patchPort, stderr, err)
+			"while getting ofport. stderr: %v, error: %v", netConfig.patchPort, stderr, err)
 	}
 	netConfig.ofPortPatch = ofportPatch
 	return nil
@@ -135,7 +141,13 @@ func setBridgeNetworkOfPorts(bridge *bridgeConfiguration, netName string) error 
 	return netConfig.setBridgeNetworkOfPortsInternal()
 }
 
-func NewUserDefinedNetworkGateway(netInfo util.NetInfo, networkID int, node *v1.Node, nodeLister listers.NodeLister, kubeInterface kube.Interface) *UserDefinedNetworkGateway {
+func NewUserDefinedNetworkGateway(netInfo util.NetInfo, networkID int, node *v1.Node,
+	nodeLister listers.NodeLister, kubeInterface kube.Interface,
+	defaultNetworkGateway Gateway) (*UserDefinedNetworkGateway, error) {
+	gw, ok := defaultNetworkGateway.(*gateway)
+	if !ok {
+		return nil, fmt.Errorf("unable to deference default node network controller gateway object")
+	}
 	return &UserDefinedNetworkGateway{
 		NetInfo:       netInfo,
 		networkID:     networkID,
@@ -144,18 +156,56 @@ func NewUserDefinedNetworkGateway(netInfo util.NetInfo, networkID int, node *v1.
 		kubeInterface: kubeInterface,
 		// Generate a per network conntrack mark to be used for egress traffic.
 		masqCTMark: ctMarkUDNBase + uint(networkID),
-	}
+		gateway:    gw,
+	}, nil
 }
 
 // AddNetwork will be responsible to create all plumbings
 // required by this UDN on the gateway side
 func (udng *UserDefinedNetworkGateway) AddNetwork() error {
-	return udng.addUDNManagementPort()
+	err := udng.addUDNManagementPort()
+	if err != nil {
+		return fmt.Errorf("failed to add management port %s; error: %v", udng.GetNetworkName(), err)
+	}
+	if udng.openflowManager != nil {
+		udng.openflowManager.addNetwork(udng.NetInfo, udng.masqCTMark)
+
+		waiter := newStartupWaiter()
+		readyFunc := func() (bool, error) {
+			if err := setBridgeNetworkOfPorts(udng.openflowManager.defaultBridge, udng.GetNetworkName()); err != nil {
+				return false, fmt.Errorf("failed to set network %s's openflow ports for default bridge; error: %v", udng.GetNetworkName(), err)
+			}
+			if udng.openflowManager.externalGatewayBridge != nil {
+				if err := setBridgeNetworkOfPorts(udng.openflowManager.externalGatewayBridge, udng.GetNetworkName()); err != nil {
+					return false, fmt.Errorf("failed to set network %s's openflow ports for secondary bridge; error: %v", udng.GetNetworkName(), err)
+				}
+			}
+			return true, nil
+		}
+		postFunc := func() error {
+			if err := udng.Reconcile(); err != nil {
+				return fmt.Errorf("failed to reconcile flows on bridge for network %s; error: %v", udng.GetNetworkName(), err)
+			}
+			return nil
+		}
+		waiter.AddWait(readyFunc, postFunc)
+		if err := waiter.Wait(); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // DelNetwork will be responsible to remove all plumbings
 // used by this UDN on the gateway side
 func (udng *UserDefinedNetworkGateway) DelNetwork() error {
+	if udng.openflowManager != nil {
+		udng.openflowManager.delNetwork(udng.NetInfo)
+		// TODO (dceara): Do we need to reconcile all flows? Is this heavy?
+		if err := udng.Reconcile(); err != nil {
+			return fmt.Errorf("failed to reconcile default gateway for network %s, err: %v", udng.GetNetworkName(), err)
+		}
+	}
 	return udng.deleteUDNManagementPort()
 }
 
