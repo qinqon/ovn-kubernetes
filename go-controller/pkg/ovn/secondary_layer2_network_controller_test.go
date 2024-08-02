@@ -24,7 +24,7 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 )
 
-var _ = FDescribe("OVN Multi-Homed pod operations for layer2 network", func() {
+var _ = Describe("OVN Multi-Homed pod operations for layer2 network", func() {
 	var (
 		app       *cli.App
 		fakeOvn   *FakeOVN
@@ -74,22 +74,6 @@ var _ = FDescribe("OVN Multi-Homed pod operations for layer2 network", func() {
 				)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(netInfo.setupOVNDependencies(&initialDB)).To(Succeed())
-
-				if netInfo.isPrimary {
-					initialDB.NBData = append(
-						initialDB.NBData,
-						&nbdb.LogicalSwitch{
-							Name: fmt.Sprintf("%s_join", netInfo.netName),
-						},
-						&nbdb.LogicalRouter{
-							Name: fmt.Sprintf("%s_ovn_cluster_router", netInfo.netName),
-						},
-						&nbdb.LogicalRouterPort{
-							Name: fmt.Sprintf("rtos-%s_%s", netInfo.netName, nodeName),
-						},
-					)
-				}
-
 				fakeOvn.startWithDBSetup(
 					initialDB,
 					&v1.NamespaceList{
@@ -229,4 +213,23 @@ func dummyL2TestPod(nsName string, info secondaryNetInfo) testPod {
 		[]util.PodRoute{},
 	)
 	return pod
+}
+
+func expectedLayer2EgressEntities(networkName string) []libovsdbtest.TestData {
+	clusterRouterName := fmt.Sprintf("GR_%s_test-node", networkName)
+	expectedEntities := []libovsdbtest.TestData{
+		&nbdb.LogicalRouter{
+			Name:         clusterRouterName,
+			UUID:         clusterRouterName + "-UUID",
+			Ports:        []string{"rtoj-isolatednet_test-node-UUID"},
+			StaticRoutes: []string{"sr1-UUID", "sr2-UUID"},
+			Policies:     []string{"lrpol1-UUID", "lrpol2-UUID"},
+		},
+		&nbdb.LogicalRouterPort{UUID: "rtoj-isolatednet_ovn_layer2_switch-UUID", Name: "rtoj-isolatednet_ovn_layer2_switch", Networks: []string{"100.200.0.1/16"}, MAC: "0a:58:64:c8:00:03", GatewayChassis: []string{"rtos-isolatednet_test-node-abdcef-UUID"}},
+		expectedGRStaticRoute("sr1-UUID", "192.168.0.0/16", "10.10.10.0", &nbdb.LogicalRouterStaticRoutePolicySrcIP, nil),
+		expectedGRStaticRoute("sr2-UUID", "10.10.10.0", "10.10.10.0", nil, nil),
+		&nbdb.LogicalRouterPolicy{UUID: "lrpol1-UUID", Action: "reroute", ExternalIDs: map[string]string{"k8s.ovn.org/topology": "layer3", "k8s.ovn.org/network": "isolatednet"}, Match: "inport == \"rtos-isolatednet_test-node\" && ip4.dst == 10.89.0.14 /* isolatednet_test-node */", Nexthops: []string{"192.168.0.2"}, Priority: 1004},
+		&nbdb.LogicalRouterPolicy{UUID: "lrpol2-UUID", Action: "reroute", ExternalIDs: map[string]string{"k8s.ovn.org/topology": "layer3", "k8s.ovn.org/network": "isolatednet"}, Match: "inport == \"rtos-isolatednet_test-node\" && ip4.dst == 169.254.169.13 /* isolatednet_test-node */", Nexthops: []string{"192.168.0.2"}, Priority: 1004},
+	}
+	return expectedEntities
 }

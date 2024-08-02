@@ -180,7 +180,12 @@ func (em *secondaryNetworkExpectationMachine) expectedLogicalSwitchesAndPorts() 
 			})
 			if em.isPrimaryUDN {
 				data = append(data, expectedGWEntities(pod.nodeName, ocInfo.bnc.GetNetworkName())...)
-				data = append(data, expectedLayer3EgressEntities(ocInfo.bnc.GetNetworkName())...)
+				switch ocInfo.bnc.TopologyType() {
+				case ovntypes.Layer3Topology:
+					data = append(data, expectedLayer3EgressEntities(ocInfo.bnc.GetNetworkName())...)
+				case ovntypes.Layer2Topology:
+					data = append(data, expectedLayer2EgressEntities(ocInfo.bnc.GetNetworkName())...)
+				}
 			}
 		}
 
