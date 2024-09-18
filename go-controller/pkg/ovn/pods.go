@@ -331,8 +331,16 @@ func (oc *DefaultNetworkController) addLogicalPort(pod *kapi.Pod) (err error) {
 	_ = oc.logicalPortCache.add(pod, switchName, ovntypes.DefaultNetworkName, lsp.UUID, podAnnotation.MAC, podAnnotation.IPs)
 
 	if kubevirt.IsPodLiveMigratable(pod) {
-		if err := kubevirt.EnsureDHCPOptionsForMigratablePod(oc.controllerName, oc.nbClient, oc.watchFactory, pod, podAnnotation.IPs, lsp); err != nil {
+
+		// If default network is not primary, update secondaryPods port group to isolate default network
+		networkRole, err := oc.GetNetworkRole(pod)
+		if err != nil {
 			return err
+		}
+		if networkRole == ovntypes.NetworkRolePrimary {
+			if err := kubevirt.EnsureDHCPOptionsForMigratablePod(oc.controllerName, oc.nbClient, oc.watchFactory, pod, podAnnotation.IPs, lsp); err != nil {
+				return err
+			}
 		}
 	}
 

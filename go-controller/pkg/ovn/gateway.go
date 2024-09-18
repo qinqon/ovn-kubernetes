@@ -370,6 +370,9 @@ func (gw *GatewayManager) GatewayInit(
 		MAC:      gwLRPMAC.String(),
 		Networks: gwLRPNetworks,
 		Options:  options,
+		Ipv6RaConfigs: map[string]string{
+			"address_mode": "dhcpv6_stateful",
+		},
 	}
 	if gw.netInfo.IsSecondary() {
 		logicalRouterPort.ExternalIDs = map[string]string{

@@ -18,6 +18,7 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kubevirt"
 	logicalswitchmanager "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/logical_switch_manager"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	ovntypes "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 	kapi "k8s.io/api/core/v1"
@@ -424,17 +425,23 @@ func (bnc *BaseNetworkController) getExpectedSwitchName(pod *kapi.Pod) (string, 
 // controller's zone.
 func (bnc *BaseNetworkController) ensurePodAnnotation(pod *kapi.Pod, nadName string) (*util.PodAnnotation, bool, error) {
 	if kubevirt.IsPodLiveMigratable(pod) {
-		podAnnotation, err := kubevirt.EnsurePodAnnotationForVM(bnc.watchFactory, bnc.kube, pod, bnc.NetInfo, nadName)
+		networkRole, err := bnc.GetNetworkRole(pod)
 		if err != nil {
 			return nil, false, err
 		}
-		if podAnnotation == nil {
-			return nil, true, nil
+		if networkRole == types.NetworkRolePrimary && bnc.IsDefault() {
+			podAnnotation, err := kubevirt.EnsurePodAnnotationForVM(bnc.watchFactory, bnc.kube, pod, bnc.NetInfo, nadName)
+			if err != nil {
+				return nil, false, err
+			}
+			if podAnnotation == nil {
+				return nil, true, nil
+			}
+			// The live migrated pods will have the pod annotation but the switch manager running
+			// at the node will not contain the switch as expected
+			_, zoneContainsPodSubnet := kubevirt.ZoneContainsPodSubnet(bnc.lsManager, podAnnotation.IPs)
+			return podAnnotation, zoneContainsPodSubnet, nil
 		}
-		// The live migrated pods will have the pod annotation but the switch manager running
-		// at the node will not contain the switch as expected
-		_, zoneContainsPodSubnet := kubevirt.ZoneContainsPodSubnet(bnc.lsManager, podAnnotation.IPs)
-		return podAnnotation, zoneContainsPodSubnet, nil
 	}
 	podAnnotation, err := util.UnmarshalPodAnnotation(pod.Annotations, nadName)
 	if err != nil {

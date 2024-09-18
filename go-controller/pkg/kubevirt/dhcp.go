@@ -89,14 +89,19 @@ func retrieveDNSServiceClusterIPs(k8scli *factory.WatchFactory) (string, string,
 }
 
 func ComposeDHCPv4Options(cidr, dnsServer, controllerName string, vmKey ktypes.NamespacedName) *nbdb.DHCPOptions {
-	serverMAC := util.IPAddrToHWAddr(net.ParseIP(ARPProxyIPv4)).String()
+	router := ARPProxyIPv4
+	_, ipnet, err := net.ParseCIDR(cidr)
+	if err == nil {
+		router = util.GetNodeGatewayIfAddr(ipnet).IP.String()
+	}
+	serverMAC := util.IPAddrToHWAddr(net.ParseIP(router)).String()
 	dhcpOptions := &nbdb.DHCPOptions{
 		Cidr: cidr,
 		Options: map[string]string{
 			"lease_time": fmt.Sprintf("%d", dhcpLeaseTime),
-			"router":     ARPProxyIPv4,
+			"router":     router,
 			"dns_server": dnsServer,
-			"server_id":  ARPProxyIPv4,
+			"server_id":  router,
 			"server_mac": serverMAC,
 			"hostname":   fmt.Sprintf("%q", vmKey.Name),
 		},

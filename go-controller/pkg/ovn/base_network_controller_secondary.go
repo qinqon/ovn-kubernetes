@@ -16,6 +16,7 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/factory"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/generator/udn"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kubevirt"
 	libovsdbops "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/libovsdb/ops"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/metrics"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/nbdb"
@@ -270,6 +271,7 @@ func (bsnc *BaseSecondaryNetworkController) ensurePodForSecondaryNetwork(pod *ka
 		if err = bsnc.addLogicalPortToNetworkForNAD(pod, nadName, switchName, network); err != nil {
 			errs = append(errs, fmt.Errorf("failed to add logical port of Pod %s/%s for NAD %s: %w", pod.Namespace, pod.Name, nadName, err))
 		}
+
 	}
 	if len(errs) != 0 {
 		return utilerrors.Join(errs...)
@@ -384,6 +386,12 @@ func (bsnc *BaseSecondaryNetworkController) addLogicalPortToNetworkForNAD(pod *k
 		bsnc.podRecorder.AddLSP(pod.UID, bsnc.NetInfo)
 		if newlyCreated {
 			metrics.RecordPodCreated(pod, bsnc.NetInfo)
+		}
+	}
+
+	if kubevirt.IsPodLiveMigratable(pod) {
+		if err := kubevirt.EnsureDHCPOptionsForMigratablePod(bsnc.controllerName, bsnc.nbClient, bsnc.watchFactory, pod, podAnnotation.IPs, lsp); err != nil {
+			return err
 		}
 	}
 

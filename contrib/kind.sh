@@ -1175,9 +1175,9 @@ if [ "$KIND_INSTALL_PLUGINS" == true ]; then
   install_plugins
 fi
 if [ "$KIND_INSTALL_KUBEVIRT" == true ]; then
-  install_kubevirt
-  deploy_kubevirt_binding
-  deploy_passt_binary
+  #install_kubevirt
+  #deploy_kubevirt_binding
+  #deploy_passt_binary
 
   install_cert_manager
   if [ "$KIND_OPT_OUT_KUBEVIRT_IPAM" != true ]; then

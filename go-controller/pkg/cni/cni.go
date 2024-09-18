@@ -158,7 +158,9 @@ func (pr *PodRequest) cmdAddWithGetCNIResultFunc(kubeAuth *KubeAPIAuth, clientse
 		return nil, err
 	}
 
-	podInterfaceInfo.SkipIPConfig = kubevirt.IsPodLiveMigratable(pod)
+	if !primaryUDN.Found() {
+		podInterfaceInfo.SkipIPConfig = kubevirt.IsPodLiveMigratable(pod)
+	}
 
 	response := &Response{KubeAuth: kubeAuth}
 	if !config.UnprivilegedMode {
@@ -174,6 +176,7 @@ func (pr *PodRequest) cmdAddWithGetCNIResultFunc(kubeAuth *KubeAPIAuth, clientse
 			if err != nil {
 				return nil, err
 			}
+			primaryUDNPodInfo.SkipIPConfig = kubevirt.IsPodLiveMigratable(pod)
 			primaryUDNResult, err := getCNIResultFn(primaryUDNPodRequest, clientset, primaryUDNPodInfo)
 			if err != nil {
 				return nil, err
