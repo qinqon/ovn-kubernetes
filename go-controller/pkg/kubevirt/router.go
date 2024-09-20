@@ -236,6 +236,10 @@ func EnsureRemoteZonePodAddressesToNodeRoute(controllerName string, watchFactory
 	return nil
 }
 
+func VirtualMachineReady(watchFactory *factory.WatchFactory, pod *corev1.Pod) (bool, error) {
+	return virtualMachineReady(watchFactory, pod)
+}
+
 func virtualMachineReady(watchFactory *factory.WatchFactory, pod *corev1.Pod) (bool, error) {
 	isMigratedSourcePodStale, err := IsMigratedSourcePodStale(watchFactory, pod)
 	if err != nil {

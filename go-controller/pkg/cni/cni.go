@@ -18,7 +18,6 @@ import (
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/cni/udn"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kube"
-	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/kubevirt"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 )
@@ -158,7 +157,8 @@ func (pr *PodRequest) cmdAddWithGetCNIResultFunc(kubeAuth *KubeAPIAuth, clientse
 		return nil, err
 	}
 
-	podInterfaceInfo.SkipIPConfig = kubevirt.IsPodLiveMigratable(pod)
+	//FIXME: Just for the poc
+	//podInterfaceInfo.SkipIPConfig = kubevirt.IsPodLiveMigratable(pod)
 
 	response := &Response{KubeAuth: kubeAuth}
 	if !config.UnprivilegedMode {

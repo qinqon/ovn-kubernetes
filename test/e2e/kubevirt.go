@@ -1391,7 +1391,7 @@ passwd:
 				test:     liveMigrate,
 				topology: "localnet",
 			}),
-			Entry(nil, testData{
+			FEntry(nil, testData{
 				resource: virtualMachine,
 				test:     liveMigrate,
 				topology: "layer2",

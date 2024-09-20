@@ -330,11 +330,12 @@ func (oc *DefaultNetworkController) addLogicalPort(pod *kapi.Pod) (err error) {
 	// Add the pod's logical switch port to the port cache
 	_ = oc.logicalPortCache.add(pod, switchName, ovntypes.DefaultNetworkName, lsp.UUID, podAnnotation.MAC, podAnnotation.IPs)
 
-	if kubevirt.IsPodLiveMigratable(pod) {
-		if err := kubevirt.EnsureDHCPOptionsForMigratablePod(oc.controllerName, oc.nbClient, oc.watchFactory, pod, podAnnotation.IPs, lsp); err != nil {
-			return err
-		}
-	}
+	// FIXME: Just for the POC
+	//if kubevirt.IsPodLiveMigratable(pod) {
+	//	if err := kubevirt.EnsureDHCPOptionsForMigratablePod(oc.controllerName, oc.nbClient, oc.watchFactory, pod, podAnnotation.IPs, lsp); err != nil {
+	//		return err
+	//	}
+	//}
 
 	//observe the pod creation latency metric for newly created pods only
 	if newlyCreatedPort {
