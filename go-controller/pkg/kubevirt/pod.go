@@ -24,7 +24,7 @@ import (
 // IsPodLiveMigratable will return true if the pod belongs
 // to kubevirt and should use the live migration features
 func IsPodLiveMigratable(pod *corev1.Pod) bool {
-	_, ok := pod.Annotations[kubevirtv1.AllowPodBridgeNetworkLiveMigrationAnnotation]
+	_, ok := pod.Labels[kubevirtv1.VirtualMachineNameLabel]
 	return ok
 }
 

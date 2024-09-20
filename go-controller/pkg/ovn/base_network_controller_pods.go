@@ -25,6 +25,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/klog/v2"
+	"k8s.io/utils/ptr"
 
 	libovsdbclient "github.com/ovn-org/libovsdb/client"
 	"github.com/ovn-org/libovsdb/ovsdb"
@@ -583,6 +584,15 @@ func (bnc *BaseNetworkController) addLogicalPortToNetwork(pod *kapi.Pod, nadName
 		if err != nil {
 			return nil, nil, nil, false, err
 		}
+	}
+
+	if kubevirt.IsPodLiveMigratable(pod) {
+		virtualMachineReady, err := kubevirt.VirtualMachineReady(bnc.watchFactory, pod)
+		if err != nil {
+			return nil, nil, nil, false, err
+		}
+		lsp.Enabled = ptr.To(virtualMachineReady)
+		klog.Infof("DELETEME, lsp (%s) enabled flag: %t", lsp.Name, *lsp.Enabled)
 	}
 
 	ops, err = libovsdbops.CreateOrUpdateLogicalSwitchPortsOnSwitchOps(bnc.nbClient, nil, ls, lsp)
