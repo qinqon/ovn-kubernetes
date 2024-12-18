@@ -7,6 +7,8 @@ on:
   schedule:
     - cron: '0 */12 * * *'
   workflow_dispatch:
+  repository_dispatch:
+    types: [build-pr]
 
 permissions:
   contents: read
