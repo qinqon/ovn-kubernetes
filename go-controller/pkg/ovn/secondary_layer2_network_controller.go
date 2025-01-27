@@ -6,7 +6,6 @@ import (
 	"net"
 	"reflect"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -635,54 +634,33 @@ func (oc *SecondaryLayer2NetworkController) addUpdateRemoteNodeEvent(node *corev
 }
 
 func (oc *SecondaryLayer2NetworkController) addPortForRemoteNodeGR(node *corev1.Node) error {
-	nodeJoinSubnetIPs, err := util.ParseNodeGatewayRouterJoinAddrs(node, oc.GetNetworkName())
+	_, clusterRouterTransitNeworks, err := layer2TransitNetworksPerNode(node)
 	if err != nil {
-		if util.IsAnnotationNotSetError(err) {
-			// remote node may not have the annotation yet, suppress it
-			return types.NewSuppressedError(err)
-		}
-		return fmt.Errorf("failed to get the node %s join subnet IPs: %w", node.Name, err)
+		return nil
 	}
-	if len(nodeJoinSubnetIPs) == 0 {
-		return fmt.Errorf("annotation on the node %s had empty join subnet IPs", node.Name)
+	nodeID := util.GetNodeID(node)
+	if nodeID == util.InvalidNodeID {
+		return fmt.Errorf("invalid node id")
 	}
-
-	remoteGRPortMac := util.IPAddrToHWAddr(nodeJoinSubnetIPs[0].IP)
-	var remoteGRPortNetworks []string
-	for _, ip := range nodeJoinSubnetIPs {
-		remoteGRPortNetworks = append(remoteGRPortNetworks, ip.String())
+	transitPort := nbdb.LogicalRouterPort{
+		Name:     types.RouterToRouterPrefix + oc.GetNetworkScopedGWRouterName(node.Name),
+		MAC:      util.IPAddrToHWAddr(clusterRouterTransitNeworks[0].IP).String(),
+		Networks: util.IPNetsToStringSlice(clusterRouterTransitNeworks),
+		Options: map[string]string{
+			"requested-tnl-key": strconv.Itoa(nodeID),
+			"requested-chassis": node.Name,
+		},
+		ExternalIDs: map[string]string{
+			types.NetworkExternalID:  oc.GetNetworkName(),
+			types.TopologyExternalID: oc.TopologyType(),
+			types.NodeExternalID:     node.Name,
+		},
 	}
-
-	remotePortAddr := remoteGRPortMac.String() + " " + strings.Join(remoteGRPortNetworks, " ")
-	klog.V(5).Infof("The remote port addresses for node %s in network %s are %s", node.Name, oc.GetNetworkName(), remotePortAddr)
-	logicalSwitchPort := nbdb.LogicalSwitchPort{
-		Name:      types.SwitchToRouterPrefix + oc.GetNetworkScopedSwitchName(types.OVNLayer2Switch) + "_" + node.Name,
-		Type:      "remote",
-		Addresses: []string{remotePortAddr},
-	}
-	logicalSwitchPort.ExternalIDs = map[string]string{
-		types.NetworkExternalID:  oc.GetNetworkName(),
-		types.TopologyExternalID: oc.TopologyType(),
-		types.NodeExternalID:     node.Name,
-	}
-	tunnelID, err := util.ParseUDNLayer2NodeGRLRPTunnelIDs(node, oc.GetNetworkName())
-	if err != nil {
-		if util.IsAnnotationNotSetError(err) {
-			// remote node may not have the annotation yet, suppress it
-			return types.NewSuppressedError(err)
-		}
-		// Don't consider this node as cluster-manager has not allocated node id yet.
-		return fmt.Errorf("failed to fetch tunnelID annotation from the node %s for network %s, err: %w",
-			node.Name, oc.GetNetworkName(), err)
-	}
-	logicalSwitchPort.Options = map[string]string{
-		"requested-tnl-key": strconv.Itoa(tunnelID),
-		"requested-chassis": node.Name,
-	}
-	sw := nbdb.LogicalSwitch{Name: oc.GetNetworkScopedSwitchName(types.OVNLayer2Switch)}
-	err = libovsdbops.CreateOrUpdateLogicalSwitchPortsOnSwitch(oc.nbClient, &sw, &logicalSwitchPort)
-	if err != nil {
-		return fmt.Errorf("failed to create port %v on logical switch %q: %v", logicalSwitchPort, sw.Name, err)
+	clusterRouter := nbdb.LogicalRouter{Name: oc.GetNetworkScopedClusterRouterName()}
+	if err := libovsdbops.CreateOrUpdateLogicalRouterPort(oc.nbClient, &clusterRouter,
+		&transitPort, nil, &transitPort.MAC, &transitPort.Networks,
+		&transitPort.Options, &transitPort.ExternalIDs); err != nil {
+		return fmt.Errorf("failed to create remote port %+v on router %+v: %v", transitPort, clusterRouter, err)
 	}
 	return nil
 }
@@ -708,7 +686,7 @@ func (oc *SecondaryLayer2NetworkController) deleteNodeEvent(node *corev1.Node) e
 // so all in all we want to condionally SNAT all packets that are coming from pods hosted on this node,
 // which are leaving via UDN's mpX interface to the UDN's masqueradeIP.
 func (oc *SecondaryLayer2NetworkController) addUDNClusterSubnetEgressSNAT(localPodSubnets []*net.IPNet, routerName string, node *corev1.Node) error {
-	outputPort := types.GWRouterToJoinSwitchPrefix + routerName
+	outputPort := types.RouterToSwitchPrefix + oc.GetNetworkScopedSwitchName(node.Name)
 	nats, err := oc.buildUDNEgressSNAT(localPodSubnets, outputPort, node)
 	if err != nil {
 		return err
@@ -717,7 +695,7 @@ func (oc *SecondaryLayer2NetworkController) addUDNClusterSubnetEgressSNAT(localP
 		return nil // nothing to do
 	}
 	router := &nbdb.LogicalRouter{
-		Name: routerName,
+		Name: oc.GetNetworkScopedClusterRouterName(),
 	}
 	if err := libovsdbops.CreateOrUpdateNATs(oc.nbClient, router, nats...); err != nil {
 		return fmt.Errorf("failed to update SNAT for cluster on router: %q for network %q, error: %w",
