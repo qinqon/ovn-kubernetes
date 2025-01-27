@@ -15,6 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/klog/v2"
 	utilnet "k8s.io/utils/net"
+	"k8s.io/utils/ptr"
 
 	libovsdbclient "github.com/ovn-org/libovsdb/client"
 
@@ -70,7 +71,7 @@ func NewGatewayManagerForLayer2Topology(
 ) *GatewayManager {
 	return newGWManager(
 		nodeName,
-		"",
+		netInfo.GetNetworkScopedClusterRouterName(),
 		netInfo.GetNetworkScopedGWRouterName(nodeName),
 		netInfo.GetNetworkScopedExtSwitchName(nodeName),
 		netInfo.GetNetworkScopedName(types.OVNLayer2Switch),
@@ -259,15 +260,6 @@ func (gw *GatewayManager) GatewayInit(
 	for _, gwLRPJoinIP := range gwLRPJoinIPs {
 		gwLRPIPs = append(gwLRPIPs, gwLRPJoinIP.IP)
 	}
-	if gw.netInfo.TopologyType() == types.Layer2Topology {
-		// At layer2 GR LRP acts as the layer3 ovn_cluster_router so we need
-		// to configure here the .1 address, this will work only for IC with
-		// one node per zone, since ARPs for .1 will not go beyond local switch.
-		// This is being done to add the ICMP SNATs for .1 podSubnet that OVN GR generates
-		for _, subnet := range hostSubnets {
-			gwLRPIPs = append(gwLRPIPs, util.GetNodeGatewayIfAddr(subnet).IP)
-		}
-	}
 
 	// Create a gateway router.
 	gatewayRouter := gw.gwRouterName
@@ -300,11 +292,19 @@ func (gw *GatewayManager) GatewayInit(
 		// when it comes to SNATing traffic after load balancing.
 		// Hence for Layer2 UDPNs let's set the snat-ip explicitly to the
 		// joinsubnetIP
-		joinIPDualStack := make([]string, len(gwLRPJoinIPs))
-		for i, gwLRPJoinIP := range gwLRPJoinIPs {
-			joinIPDualStack[i] = gwLRPJoinIP.IP.String()
+		node, err := gw.watchFactory.GetNode(nodeName)
+		if err != nil {
+			return err
 		}
-		logicalRouterOptions["lb_force_snat_ip"] = strings.Join(joinIPDualStack, " ")
+		gatewayRouterTransitNetworks, _, err := layer2TransitNetworksPerNode(node)
+		if err != nil {
+			return err
+		}
+		lbForceSnatIPs := []string{}
+		for _, gatewayRouterTransitNetwork := range gatewayRouterTransitNetworks {
+			lbForceSnatIPs = append(lbForceSnatIPs, gatewayRouterTransitNetwork.IP.String())
+		}
+		logicalRouterOptions["lb_force_snat_ip"] = strings.Join(lbForceSnatIPs, " ")
 	}
 	logicalRouterExternalIDs := map[string]string{
 		"physical_ip":  physicalIPs[0],
@@ -368,7 +368,7 @@ func (gw *GatewayManager) GatewayInit(
 	// TODO(kyrtapz): Clean this up for clarity as part of https://github.com/ovn-org/ovn-kubernetes/issues/4689
 	if gw.netInfo.TopologyType() == types.Layer2Topology {
 		gwSwitchPort = types.SwitchToRouterPrefix + gw.joinSwitchName
-		gwRouterPort = types.RouterToSwitchPrefix + gw.joinSwitchName
+		gwRouterPort = types.RouterToRouterPrefix + gw.netInfo.GetNetworkScopedClusterRouterName()
 	}
 
 	logicalSwitchPort := nbdb.LogicalSwitchPort{
@@ -384,23 +384,7 @@ func (gw *GatewayManager) GatewayInit(
 			types.NetworkExternalID:  gw.netInfo.GetNetworkName(),
 			types.TopologyExternalID: gw.netInfo.TopologyType(),
 		}
-		if gw.netInfo.TopologyType() == types.Layer2Topology {
-			node, err := gw.watchFactory.GetNode(nodeName)
-			if err != nil {
-				return fmt.Errorf("failed to fetch node %s from watch factory %w", node, err)
-			}
-			tunnelID, err := util.ParseUDNLayer2NodeGRLRPTunnelIDs(node, gw.netInfo.GetNetworkName())
-			if err != nil {
-				if util.IsAnnotationNotSetError(err) {
-					// remote node may not have the annotation yet, suppress it
-					return types.NewSuppressedError(err)
-				}
-				// Don't consider this node as cluster-manager has not allocated node id yet.
-				return fmt.Errorf("failed to fetch tunnelID annotation from the node %s for network %s, err: %w",
-					nodeName, gw.netInfo.GetNetworkName(), err)
-			}
-			logicalSwitchPort.Options["requested-tnl-key"] = strconv.Itoa(tunnelID)
-		}
+		logicalSwitchPort.Options["router-port"] = types.RouterToSwitchPrefix + gw.joinSwitchName
 	}
 	sw := nbdb.LogicalSwitch{Name: gw.joinSwitchName}
 	err = libovsdbops.CreateOrUpdateLogicalSwitchPortsOnSwitch(gw.nbClient, &sw, &logicalSwitchPort)
@@ -414,12 +398,69 @@ func (gw *GatewayManager) GatewayInit(
 		gwLRPNetworks = append(gwLRPNetworks, gwLRPJoinIP.String())
 	}
 	if gw.netInfo.TopologyType() == types.Layer2Topology {
-		// At layer2 GR LRP acts as the layer3 ovn_cluster_router so we need
-		// to configure here the .1 address, this will work only for IC with
-		// one node per zone, since ARPs for .1 will not go beyond local switch.
-		for _, subnet := range hostSubnets {
-			gwLRPNetworks = append(gwLRPNetworks, util.GetNodeGatewayIfAddr(subnet).String())
+		node, err := gw.watchFactory.GetNode(nodeName)
+		if err != nil {
+			return err
 		}
+		gatewayRouterTransitNetworks, clusterRouterTransitNetworks, err := layer2TransitNetworksPerNode(node)
+		if err != nil {
+			return err
+		}
+		for _, gatewayRouterTransitNetwork := range gatewayRouterTransitNetworks {
+			gwLRPNetworks = append(gwLRPNetworks, gatewayRouterTransitNetwork.String())
+		}
+
+		nodeID := util.GetNodeID(node)
+		if nodeID == util.InvalidNodeID {
+			return fmt.Errorf("invalid node id calculating transit router networks")
+		}
+
+		ovnClusterRouterToGWRouterPort := nbdb.LogicalRouterPort{
+			Name:     types.RouterToRouterPrefix + gw.netInfo.GetNetworkScopedGWRouterName(nodeName),
+			MAC:      util.IPAddrToHWAddr(clusterRouterTransitNetworks[0].IP).String(),
+			Networks: util.IPNetsToStringSlice(clusterRouterTransitNetworks),
+			Options: map[string]string{
+				"requested-tnl-key": fmt.Sprintf("%d", nodeID),
+			},
+			Peer: ptr.To(types.RouterToRouterPrefix + gw.netInfo.GetNetworkScopedClusterRouterName()),
+			ExternalIDs: map[string]string{
+				types.NetworkExternalID:  gw.netInfo.GetNetworkName(),
+				types.TopologyExternalID: gw.netInfo.TopologyType(),
+			},
+		}
+
+		ovnClusterRouter := nbdb.LogicalRouter{Name: gw.netInfo.GetNetworkScopedClusterRouterName()}
+		err = libovsdbops.CreateOrUpdateLogicalRouterPort(gw.nbClient, &ovnClusterRouter,
+			&ovnClusterRouterToGWRouterPort, nil, &ovnClusterRouterToGWRouterPort.MAC, &ovnClusterRouterToGWRouterPort.Networks,
+			&ovnClusterRouterToGWRouterPort.Options, &ovnClusterRouterToGWRouterPort.Peer, &ovnClusterRouterToGWRouterPort.ExternalIDs)
+		if err != nil {
+			return fmt.Errorf("failed to create port %+v on router %+v: %v", ovnClusterRouterToGWRouterPort, ovnClusterRouter, err)
+		}
+
+		for _, subnet := range hostSubnets {
+			networkIdx := 0
+			if utilnet.IsIPv6(subnet.IP) {
+				networkIdx = 1
+			}
+			subnetRoute := nbdb.LogicalRouterStaticRoute{
+				IPPrefix:   subnet.String(),
+				Nexthop:    clusterRouterTransitNetworks[networkIdx].IP.String(),
+				OutputPort: ptr.To(types.RouterToRouterPrefix + gw.netInfo.GetNetworkScopedClusterRouterName()),
+			}
+			subnetRoute.ExternalIDs = map[string]string{
+				types.NetworkExternalID:  gw.netInfo.GetNetworkName(),
+				types.TopologyExternalID: gw.netInfo.TopologyType(),
+			}
+			p := func(item *nbdb.LogicalRouterStaticRoute) bool {
+				return item.OutputPort != nil && *item.OutputPort == *subnetRoute.OutputPort && item.IPPrefix == subnetRoute.IPPrefix &&
+					libovsdbops.PolicyEqualPredicate(subnetRoute.Policy, item.Policy)
+			}
+			if err := libovsdbops.CreateOrReplaceLogicalRouterStaticRouteWithPredicate(gw.nbClient, gatewayRouter, &subnetRoute,
+				p, &subnetRoute.Nexthop); err != nil {
+				return fmt.Errorf("error creating static route %+v in GW router %s: %v", subnetRoute, gatewayRouter, err)
+			}
+		}
+
 	}
 
 	var options map[string]string
@@ -439,18 +480,8 @@ func (gw *GatewayManager) GatewayInit(
 			types.NetworkExternalID:  gw.netInfo.GetNetworkName(),
 			types.TopologyExternalID: gw.netInfo.TopologyType(),
 		}
-		_, isNetIPv6 := gw.netInfo.IPMode()
-		if gw.netInfo.TopologyType() == types.Layer2Topology && isNetIPv6 && config.IPv6Mode {
-			logicalRouterPort.Ipv6RaConfigs = map[string]string{
-				"address_mode":      "dhcpv6_stateful",
-				"send_periodic":     "true",
-				"max_interval":      "900", // 15 minutes
-				"min_interval":      "300", // 5 minutes
-				"router_preference": "LOW", // The static gateway configured by CNI is MEDIUM, so make this SLOW so it has less effect for pods
-			}
-			if gw.netInfo.MTU() > 0 {
-				logicalRouterPort.Ipv6RaConfigs["mtu"] = fmt.Sprintf("%d", gw.netInfo.MTU())
-			}
+		if gw.netInfo.TopologyType() == types.Layer2Topology {
+			logicalRouterPort.Peer = ptr.To(types.RouterToRouterPrefix + gw.netInfo.GetNetworkScopedGWRouterName(nodeName))
 		}
 	}
 
@@ -633,11 +664,27 @@ func (gw *GatewayManager) GatewayInit(
 
 	// Add source IP address based routes in distributed router
 	// for this gateway router.
+	gwLRPIPsForInbound := gwLRPIPs
+	if gw.netInfo.TopologyType() == types.Layer2Topology {
+		node, err := gw.watchFactory.GetNode(nodeName)
+		if err != nil {
+			return err
+		}
+		gatewayRouterTransitNetworks, _, err := layer2TransitNetworksPerNode(node)
+		if err != nil {
+			return err
+		}
+		gwLRPIPsForInbound = []net.IP{}
+		for _, gatewayRouterTransitNetwork := range gatewayRouterTransitNetworks {
+			gwLRPIPsForInbound = append(gwLRPIPsForInbound, gatewayRouterTransitNetwork.IP)
+		}
+	}
+
 	for _, hostSubnet := range hostSubnets {
 		if gw.clusterRouterName == "" {
 			break
 		}
-		gwLRPIP, err := util.MatchIPFamily(utilnet.IsIPv6CIDR(hostSubnet), gwLRPIPs)
+		gwLRPIP, err := util.MatchIPFamily(utilnet.IsIPv6CIDR(hostSubnet), gwLRPIPsForInbound)
 		if err != nil {
 			return fmt.Errorf("failed to add source IP address based "+
 				"routes in distributed router %s: %v",
@@ -1118,16 +1165,6 @@ func (gw *GatewayManager) Cleanup() error {
 		return fmt.Errorf("failed to delete logical switch port %s from switch %s: %w", portName, sw.Name, err)
 	}
 
-	// Remove the logical router port on the gateway router that connects to the join switch
-	logicalRouter := nbdb.LogicalRouter{Name: gw.gwRouterName}
-	logicalRouterPort := nbdb.LogicalRouterPort{
-		Name: gwRouterToJoinSwitchPortName,
-	}
-	err = libovsdbops.DeleteLogicalRouterPorts(gw.nbClient, &logicalRouter, &logicalRouterPort)
-	if err != nil && !errors.Is(err, libovsdbclient.ErrNotFound) {
-		return fmt.Errorf("failed to delete port %s on router %s: %w", logicalRouterPort.Name, gw.gwRouterName, err)
-	}
-
 	// Remove the static mac bindings of the gateway router
 	err = gateway.DeleteDummyGWMacBindings(gw.nbClient, gw.gwRouterName, gw.netInfo)
 	if err != nil {
@@ -1135,6 +1172,7 @@ func (gw *GatewayManager) Cleanup() error {
 	}
 
 	// Remove the gateway router associated with nodeName
+	logicalRouter := nbdb.LogicalRouter{Name: gw.gwRouterName}
 	err = libovsdbops.DeleteLogicalRouter(gw.nbClient, &logicalRouter)
 	if err != nil && !errors.Is(err, libovsdbclient.ErrNotFound) {
 		return fmt.Errorf("failed to delete gateway router %s: %w", gw.gwRouterName, err)
