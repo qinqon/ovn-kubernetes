@@ -32,8 +32,8 @@ env:
   CI_DIST_IMAGES_OUTPUT: dist/images/_output/
 
   # To run CI over custom OVN
-  # OVN_REPO: https://github.com/ovn-org/ovn
-  # OVN_GITREF: main
+  OVN_REPO: https://github.com/ovn-org/ovn
+  OVN_GITREF: main
 
 jobs:
   # separate job for parallelism
@@ -205,6 +205,15 @@ jobs:
            COVERALLS=1 CONTAINER_RUNNABLE=1 make check
         popd
 
+<<<<<<< HEAD
+=======
+    #- name: Check custom OVN image build works
+    #  run: |
+    #    pushd dist/images
+    #      make fedora-dev
+    #    popd
+
+>>>>>>> b06b43199 (dnm: Pin OVN to transit router branch)
     - name: Build docker image - from current pr branch
       if: steps.is_pr_image_build_needed.outputs.PR_IMAGE_RESTORED != 'true' && success()
       run: |
