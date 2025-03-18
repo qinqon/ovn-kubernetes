@@ -35,7 +35,7 @@ const (
 )
 
 type Manager interface {
-	// AddNetwork instructs the manager to continously reconcile BGP routes from
+	// AddNetwork instructs the manager to continuously reconcile BGP routes from
 	// the network host vrf to the network gateway router. A network can only be
 	// added once otherwise an error will be returned.
 	AddNetwork(network util.NetInfo) error
@@ -300,7 +300,7 @@ func (c *controller) syncLinkUpdate(update *netlink.LinkUpdate) {
 		delete(c.tables, oldTable)
 		c.tables[newTable] = networkID
 	default:
-		c.log.Info("Unexpected VRF update event type", "type", update.IfInfomsg.Type)
+		c.log.Info("Unexpected VRF update event type", "type", update.Header.Type, "msg", update)
 		return
 	}
 

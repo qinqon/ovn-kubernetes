@@ -25,6 +25,7 @@ import (
 	addressset "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/address_set"
 	svccontroller "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/controller/services"
 	lsm "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/logical_switch_manager"
+	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/routeimport"
 	zoneinterconnect "github.com/ovn-org/ovn-kubernetes/go-controller/pkg/ovn/zone_interconnect"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/persistentips"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/retry"
@@ -295,13 +296,7 @@ type SecondaryLayer2NetworkController struct {
 }
 
 // NewSecondaryLayer2NetworkController create a new OVN controller for the given secondary layer2 nad
-func NewSecondaryLayer2NetworkController(
-	cnci *CommonNetworkControllerInfo,
-	netInfo util.NetInfo,
-	networkManager networkmanager.Interface,
-	eIPController *EgressIPController,
-	portCache *PortCache,
-) (*SecondaryLayer2NetworkController, error) {
+func NewSecondaryLayer2NetworkController(cnci *CommonNetworkControllerInfo, netInfo util.NetInfo, networkManager networkmanager.Interface, routeImportManager routeimport.Manager, portCache *PortCache, eIPController *EgressIPController) (*SecondaryLayer2NetworkController, error) {
 
 	stopChan := make(chan struct{})
 
@@ -334,6 +329,7 @@ func NewSecondaryLayer2NetworkController(
 					localZoneNodes:              &sync.Map{},
 					cancelableCtx:               util.NewCancelableContext(),
 					networkManager:              networkManager,
+					routeImportManager:          routeImportManager,
 				},
 			},
 		},
