@@ -1555,7 +1555,7 @@ runcmd:
 				l[RequiredUDNNamespaceLabel] = ""
 			}
 			ns, err := fr.CreateNamespace(context.TODO(), fr.BaseName, l)
-			Expect(err).ToNot(HaveOccurred())
+			Expect(err).NotTo(HaveOccurred())
 			fr.Namespace = ns
 			namespace = fr.Namespace.Name
 
@@ -1662,6 +1662,20 @@ runcmd:
 			nodeIPs := e2enode.CollectAddresses(nodes, v1.NodeInternalIP)
 
 			if td.role == "primary" {
+				if isIPv6Supported() && isInterconnectEnabled() {
+					step = by(vmi.Name, fmt.Sprintf("Checking IPv6 gateway before %s %s", td.resource.description, td.test.description))
+
+					nodeRunningVMI, err := fr.ClientSet.CoreV1().Nodes().Get(context.Background(), vmi.Status.NodeName, metav1.GetOptions{})
+					Expect(err).NotTo(HaveOccurred(), step)
+
+					expectedIPv6GatewayPath, err := kubevirt.GenerateGatewayIPv6RouterLLA(nodeRunningVMI, netConfig.networkName)
+					Expect(err).NotTo(HaveOccurred())
+					Eventually(kubevirt.RetrieveIPv6Gateways).
+						WithArguments(vmi).
+						WithTimeout(5*time.Second).
+						WithPolling(time.Second).
+						Should(Equal([]string{expectedIPv6GatewayPath}), "should filter remote ipv6 gateway nexthop")
+				}
 				step = by(vmi.Name, fmt.Sprintf("Check north/south traffic before %s %s", td.resource.description, td.test.description))
 				startNorthSouthIngressIperfTraffic(externalContainerName, nodeIPs, svc.Spec.Ports[0].NodePort, step)
 				checkNorthSouthIngressIperfTraffic(externalContainerName, nodeIPs, svc.Spec.Ports[0].NodePort, step)
@@ -1706,16 +1720,16 @@ runcmd:
 			}
 
 			if td.role == "primary" && td.test.description == liveMigrate.description && isIPv4Supported() && isInterconnectEnabled() {
-				step = by(vm.Name, fmt.Sprintf("Checking IPv4 gateway cached mac after %s %s", td.resource.description, td.test.description))
+				step = by(vmi.Name, fmt.Sprintf("Checking IPv4 gateway cached mac after %s %s", td.resource.description, td.test.description))
 				Expect(crClient.Get(context.TODO(), crclient.ObjectKeyFromObject(vmi), vmi)).To(Succeed())
 
 				targetNode, err := fr.ClientSet.CoreV1().Nodes().Get(context.Background(), vmi.Status.MigrationState.TargetNode, metav1.GetOptions{})
-				Expect(err).ToNot(HaveOccurred(), step)
+				Expect(err).NotTo(HaveOccurred(), step)
 
 				expectedGatewayMAC, err := kubevirt.GenerateGatewayMAC(targetNode, netConfig.networkName)
-				Expect(err).ToNot(HaveOccurred(), step)
+				Expect(err).NotTo(HaveOccurred(), step)
 
-				Expect(err).ToNot(HaveOccurred(), step)
+				Expect(err).NotTo(HaveOccurred(), step)
 				Eventually(kubevirt.RetrieveCachedGatewayMAC).
 					WithArguments(vmi, "enp1s0", cidrIPv4).
 					WithTimeout(10*time.Second).
