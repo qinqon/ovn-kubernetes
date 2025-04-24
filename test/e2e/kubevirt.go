@@ -1044,7 +1044,7 @@ passwd:
 			var pods []*corev1.Pod
 			for _, selectedNode := range selectedNodes {
 				pod := composeAgnhostPod(
-					"testpod-"+selectedNode.Name,
+					"testpod-"+strings.ReplaceAll(selectedNode.Name, ".", "-"),
 					namespace,
 					selectedNode.Name,
 					"netexec", "--http-port", "8000")
@@ -1073,7 +1073,7 @@ fi
 			}
 			var pods []*corev1.Pod
 			for _, node := range nodes {
-				pod, err := createPod(fr, "testpod-"+node.Name, node.Name, namespace, []string{"bash", "-c"}, map[string]string{}, func(pod *corev1.Pod) {
+				pod, err := createPod(fr, "testpod-"+strings.ReplaceAll(node.Name, ".", "-"), node.Name, namespace, []string{"bash", "-c"}, map[string]string{}, func(pod *corev1.Pod) {
 					pod.Annotations = annotations
 					pod.Spec.Containers[0].Image = iperf3Image
 					pod.Spec.Containers[0].Args = []string{iperfServerScript + "\n sleep infinity"}
@@ -1163,7 +1163,8 @@ fi
 			return createClusterExternalContainer(
 				name,
 				iperf3Image,
-				[]string{"--network", "kind", "--entrypoint", "/bin/bash"},
+				//TODO: Only for kind
+				[]string{ /*"--network", "kind",*/ "--entrypoint", "/bin/bash"},
 				[]string{"-c", "sleep infinity"},
 			)
 		}
@@ -1353,9 +1354,10 @@ fi
 		)
 	})
 	Context("with user defined networks and persistent ips configured", Ordered, func() {
-		AfterAll(func() {
-			Expect(removeImagesInNodes(kubevirt.FedoraContainerDiskImage)).To(Succeed())
-		})
+		//TODO: Only for kind
+		//AfterAll(func() {
+		//	Expect(removeImagesInNodes(kubevirt.FedoraContainerDiskImage)).To(Succeed())
+		//})
 		type testCommand struct {
 			description string
 			cmd         func()
@@ -1720,7 +1722,7 @@ runcmd:
 				test:     liveMigrate,
 				topology: "layer2",
 			}),
-			Entry(nil, testData{
+			FEntry(nil, testData{
 				resource: virtualMachineWithUDN,
 				test:     liveMigrate,
 				topology: "layer2",
