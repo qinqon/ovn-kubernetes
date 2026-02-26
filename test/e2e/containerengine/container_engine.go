@@ -14,7 +14,7 @@ func (ce ContainerEngine) String() string {
 
 func (ce ContainerEngine) NetworkCIDRsFmt() string {
 	if ce == Podman {
-		return "{{json .Subnets }}"
+		return "'{{json .Subnets }}'"
 	}
 	if ce == Docker {
 		return "{{json .IPAM.Config }}"
