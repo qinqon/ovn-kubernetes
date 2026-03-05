@@ -3,6 +3,7 @@ package ops
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/google/uuid"
 
@@ -176,7 +177,8 @@ func CreateOrUpdateChassis(sbClient libovsdbclient.Client, chassis *sbdb.Chassis
 }
 
 // validateRequestedChassisOption is a guard to ensure a caller is using the chassis-id (uuid format)
-// for the requested chassis option.
+// for the requested chassis option. Supports comma-separated UUIDs for multi-chassis
+// (e.g., "uuid1,uuid2" used during live migration with activation-strategy).
 func validateRequestedChassisOption(options map[string]string) error {
 	if len(options) == 0 {
 		return nil
@@ -185,8 +187,10 @@ func validateRequestedChassisOption(options map[string]string) error {
 	if !ok || chassisID == "" {
 		return nil
 	}
-	if _, err := uuid.Parse(chassisID); err != nil {
-		return fmt.Errorf("requested-chassis must be a valid UUID, got %q", chassisID)
+	for _, id := range strings.Split(chassisID, ",") {
+		if _, err := uuid.Parse(id); err != nil {
+			return fmt.Errorf("requested-chassis must contain valid UUIDs, got %q", chassisID)
+		}
 	}
 	return nil
 }

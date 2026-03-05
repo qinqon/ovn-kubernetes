@@ -5,16 +5,17 @@ import (
 )
 
 type Diagnostics struct {
-	fr                                     *framework.Framework
-	conntrack, iptables, ovsflows, tcpdump bool
+	fr                                                  *framework.Framework
+	conntrack, iptables, ovsflows, tcpdump, nbdbMonitor bool
 }
 
 func New(fr *framework.Framework) *Diagnostics {
 	return &Diagnostics{
-		fr:        fr,
-		conntrack: conntrack,
-		iptables:  iptables,
-		ovsflows:  ovsflows,
-		tcpdump:   tcpdump,
+		fr:          fr,
+		conntrack:   conntrack,
+		iptables:    iptables,
+		ovsflows:    ovsflows,
+		tcpdump:     tcpdump,
+		nbdbMonitor: nbdbMonitor,
 	}
 }

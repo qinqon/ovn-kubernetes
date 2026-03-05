@@ -301,6 +301,8 @@ ovn_enable_multi_external_gateway=${OVN_ENABLE_MULTI_EXTERNAL_GATEWAY:-false}
 ovn_enable_ovnkube_identity=${OVN_ENABLE_OVNKUBE_IDENTITY:-true}
 #OVN_ENABLE_PERSISTENT_IPS - enable IPAM for virtualization workloads (KubeVirt persistent IPs)
 ovn_enable_persistent_ips=${OVN_ENABLE_PERSISTENT_IPS:-false}
+#OVN_ENABLE_MULTI_CHASSIS_LIVE_MIGRATION - enable OVN multi-chassis for near-instant live migration switchover
+ovn_enable_multi_chassis_live_migration=${OVN_ENABLE_MULTI_CHASSIS_LIVE_MIGRATION:-false}
 
 # OVNKUBE_NODE_MODE - is the mode which ovnkube node operates
 ovnkube_node_mode=${OVNKUBE_NODE_MODE:-"full"}
@@ -1498,6 +1500,12 @@ ovn-master() {
   fi
   echo "persistent_ips_enabled_flag: ${persistent_ips_enabled_flag}"
 
+  multi_chassis_live_migration_flag=
+  if [[ ${ovn_enable_multi_chassis_live_migration} == "true" ]]; then
+	  multi_chassis_live_migration_flag="--enable-multi-chassis-live-migration"
+  fi
+  echo "multi_chassis_live_migration_flag: ${multi_chassis_live_migration_flag}"
+
   ovn_enable_dnsnameresolver_flag=
   if [[ ${ovn_enable_dnsnameresolver} == "true" ]]; then
 	  ovn_enable_dnsnameresolver_flag="--enable-dns-name-resolver"
@@ -1544,6 +1552,7 @@ ovn-master() {
     ${ovn_v6_join_subnet_opt} \
     ${ovn_v6_masquerade_subnet_opt} \
     ${persistent_ips_enabled_flag} \
+    ${multi_chassis_live_migration_flag} \
     ${network_qos_enabled_flag} \
     ${ovn_enable_dnsnameresolver_flag} \
     ${ovn_allow_icmp_netpol_flag} \
@@ -2363,6 +2372,18 @@ ovnkube-controller-with-node() {
   fi
   echo "ovn_observ_enable_flag=${ovn_observ_enable_flag}"
 
+  persistent_ips_enabled_flag=
+  if [[ ${ovn_enable_persistent_ips} == "true" ]]; then
+	  persistent_ips_enabled_flag="--enable-persistent-ips"
+  fi
+  echo "persistent_ips_enabled_flag: ${persistent_ips_enabled_flag}"
+
+  multi_chassis_live_migration_flag=
+  if [[ ${ovn_enable_multi_chassis_live_migration} == "true" ]]; then
+	  multi_chassis_live_migration_flag="--enable-multi-chassis-live-migration"
+  fi
+  echo "multi_chassis_live_migration_flag: ${multi_chassis_live_migration_flag}"
+
   ovn_stateless_netpol_enable_flag=
   if [[ ${ovn_stateless_netpol_enable} == "true" ]]; then
           ovn_stateless_netpol_enable_flag="--enable-stateless-netpol"
@@ -2457,6 +2478,8 @@ ovnkube-controller-with-node() {
     ${ovn_disable_requestedchassis_flag} \
     ${cluster_access_opts} \
     ${ovn_allow_icmp_netpol_flag} \
+    ${persistent_ips_enabled_flag} \
+    ${multi_chassis_live_migration_flag} \
     --cluster-subnets ${net_cidr} --k8s-service-cidr=${svc_cidr} \
     --export-ovs-metrics \
     --gateway-mode=${ovn_gateway_mode} ${ovn_gateway_opts} \
@@ -2634,6 +2657,12 @@ ovn-cluster-manager() {
   fi
   echo "persistent_ips_enabled_flag: ${persistent_ips_enabled_flag}"
 
+  multi_chassis_live_migration_flag=
+  if [[ ${ovn_enable_multi_chassis_live_migration} == "true" ]]; then
+	  multi_chassis_live_migration_flag="--enable-multi-chassis-live-migration"
+  fi
+  echo "multi_chassis_live_migration_flag: ${multi_chassis_live_migration_flag}"
+
   ovnkube_cluster_manager_metrics_bind_address="${metrics_endpoint_ip}:9411"
   echo "ovnkube_cluster_manager_metrics_bind_address: ${ovnkube_cluster_manager_metrics_bind_address}"
 
@@ -2714,6 +2743,7 @@ ovn-cluster-manager() {
     ${advertised_udn_isolation_flag} \
     ${ovnkube_config_file_flag} \
     ${persistent_ips_enabled_flag} \
+    ${multi_chassis_live_migration_flag} \
     ${ovnkube_enable_interconnect_flag} \
     ${ovnkube_enable_multi_external_gateway_flag} \
     ${ovnkube_metrics_tls_opts} \

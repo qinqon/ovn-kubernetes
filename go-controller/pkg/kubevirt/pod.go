@@ -441,6 +441,10 @@ const (
 	// LiveMigrationTargetDomainReady indicates that the target domain is ready to take over.
 	LiveMigrationTargetDomainReady LiveMigrationState = "TargetDomainReady"
 
+	// LiveMigrationSucceeded indicates that the live migration has completed successfully.
+	// The target pod has the kubevirt.io/nodeName label set.
+	LiveMigrationSucceeded LiveMigrationState = "Succeeded"
+
 	// LiveMigrationFailed indicates that the live migration process has failed.
 	LiveMigrationFailed LiveMigrationState = "Failed"
 )
@@ -521,6 +525,15 @@ func DiscoverLiveMigrationStatus(client *factory.WatchFactory, pod *corev1.Pod) 
 	if isTargetPodReady(status.TargetPod) {
 		status.State = LiveMigrationTargetDomainReady
 	}
+
+	// Migration is fully complete when kubevirt.io/nodeName on the target pod
+	// matches the target pod's node (KubeVirt updates this label when the VM
+	// finishes migrating to the target).
+	if nodeNameLabel, ok := status.TargetPod.Labels[kubevirtv1.NodeNameLabel]; ok &&
+		nodeNameLabel == status.TargetPod.Spec.NodeName {
+		status.State = LiveMigrationSucceeded
+	}
+
 	return &status, nil
 }
 

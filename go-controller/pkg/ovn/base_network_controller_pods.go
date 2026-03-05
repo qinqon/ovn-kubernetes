@@ -453,8 +453,11 @@ func (bnc *BaseNetworkController) ensurePodAnnotation(pod *corev1.Pod, nadKey st
 	return podAnnotation, true, nil
 }
 
+// addLogicalPortToNetwork creates or updates a logical switch port for a pod.
+// additionalOptions, if non-nil, are merged into the LSP options after the default
+// options (like requested-chassis) are set, allowing callers to override or add options.
 func (bnc *BaseNetworkController) addLogicalPortToNetwork(pod *corev1.Pod, nadKey string,
-	network *nadapi.NetworkSelectionElement, enable *bool) (ops []ovsdb.Operation,
+	network *nadapi.NetworkSelectionElement, enable *bool, additionalOptions ...map[string]string) (ops []ovsdb.Operation,
 	lsp *nbdb.LogicalSwitchPort, podAnnotation *util.PodAnnotation, newlyCreatedPort bool, err error) {
 	var ls *nbdb.LogicalSwitch
 
@@ -570,6 +573,13 @@ func (bnc *BaseNetworkController) addLogicalPortToNetwork(pod *corev1.Pod, nadKe
 			return nil, nil, nil, false, err
 		}
 		lsp.Options[libovsdbops.RequestedChassis] = chassisID
+	}
+
+	// Apply additional options (e.g., multi-chassis for live migration)
+	for _, opts := range additionalOptions {
+		for k, v := range opts {
+			lsp.Options[k] = v
+		}
 	}
 
 	// Although we have different code to allocate the pod annotation for the
@@ -1235,4 +1245,17 @@ func (bnc *BaseNetworkController) wasPodReleasedBeforeStartup(uid, nadKey string
 
 func (bnc *BaseNetworkController) isNonHostSubnetSwitch(switchName string) bool {
 	return bnc.doesNetworkRequireIPAM() && bnc.lsManager.IsNonHostSubnetSwitch(switchName)
+}
+
+// getChassisIDForNode looks up a node and returns its OVN chassis ID from annotations.
+func (bnc *BaseNetworkController) getChassisIDForNode(nodeName string) (string, error) {
+	node, err := bnc.watchFactory.GetNode(nodeName)
+	if err != nil {
+		return "", fmt.Errorf("failed to get node %s: %w", nodeName, err)
+	}
+	chassisID, err := util.ParseNodeChassisIDAnnotation(node)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse chassis ID for node %s: %w", nodeName, err)
+	}
+	return chassisID, nil
 }

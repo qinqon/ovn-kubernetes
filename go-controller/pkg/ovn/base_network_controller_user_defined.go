@@ -245,6 +245,11 @@ func (bsnc *BaseUserDefinedNetworkController) ensurePodForUserDefinedNetwork(pod
 			return fmt.Errorf("failed to discover Live-migration status: %w", err)
 		}
 	}
+	if kubevirtLiveMigrationStatus != nil && config.OVNKubernetesFeature.EnableMultiChassisLiveMigration {
+		klog.Infof("multi-chassis: pod %s/%s migration state=%s shouldHandle=%v addPort=%v",
+			pod.Namespace, pod.Name, kubevirtLiveMigrationStatus.State,
+			pod.Name == kubevirtLiveMigrationStatus.TargetPod.Name, addPort)
+	}
 	updatePort := kubevirtLiveMigrationStatus != nil && pod.Name == kubevirtLiveMigrationStatus.TargetPod.Name
 
 	if !addPort && !updatePort {
@@ -342,10 +347,51 @@ func (bsnc *BaseUserDefinedNetworkController) addLogicalPortToNetworkForNAD(pod 
 	var lspEnabled *bool
 	// actions on the pods' LSP are only triggerred from the target pod
 	shouldHandleLiveMigration := kubevirtLiveMigrationStatus != nil && pod.Name == kubevirtLiveMigrationStatus.TargetPod.Name
+	multiChassisEnabled := config.OVNKubernetesFeature.EnableMultiChassisLiveMigration
 	if shouldHandleLiveMigration {
-		// LSP should be altered inside addLogicalPortToNetwork() before ops are generated because one cannot append
-		// multiple ops regarding the same object in the same transact, so passing enabled parameter.
-		lspEnabled = ptr.To(kubevirtLiveMigrationStatus.IsTargetDomainReady())
+		if multiChassisEnabled {
+			// With multi-chassis, don't touch the Enabled flag on any LSP.
+			// OVN handles traffic delivery via activation-strategy=rarp on the
+			// source LSP's requested-chassis=src,dst. No enable/disable needed.
+			lspEnabled = nil
+		} else {
+			// LSP should be altered inside addLogicalPortToNetwork() before ops are generated because one cannot append
+			// multiple ops regarding the same object in the same transact, so passing enabled parameter.
+			lspEnabled = ptr.To(kubevirtLiveMigrationStatus.IsTargetDomainReady())
+		}
+	}
+
+	// During live migration with multi-chassis, both source and target LSPs get
+	// requested-chassis=src,dst. The activation-strategy=rarp is set only on the
+	// target LSP — OVN blocks traffic on the target until RARP activates it.
+	// When migration succeeds (Succeeded state), no multi-chassis opts are set —
+	// the LSPs are reverted to single chassis in the shouldHandleLiveMigration block.
+	var podMultiChassisOpts map[string]string
+	if multiChassisEnabled && kubevirtLiveMigrationStatus != nil &&
+		kubevirtLiveMigrationStatus.State != kubevirt.LiveMigrationSucceeded &&
+		kubevirtLiveMigrationStatus.State != kubevirt.LiveMigrationFailed {
+		isSourceDuringMigration := pod.Name == kubevirtLiveMigrationStatus.SourcePod.Name
+		if shouldHandleLiveMigration || isSourceDuringMigration {
+			sourceChassis, err := bsnc.getChassisIDForNode(kubevirtLiveMigrationStatus.SourcePod.Spec.NodeName)
+			if err != nil {
+				return fmt.Errorf("failed to get source chassis ID for multi-chassis: %w", err)
+			}
+			targetChassis, err := bsnc.getChassisIDForNode(kubevirtLiveMigrationStatus.TargetPod.Spec.NodeName)
+			if err != nil {
+				return fmt.Errorf("failed to get target chassis ID for multi-chassis: %w", err)
+			}
+			podMultiChassisOpts = map[string]string{
+				libovsdbops.RequestedChassis: sourceChassis + "," + targetChassis,
+			}
+			// activation-strategy on target LSP: use rarp,garp to support
+			// both RARP and GARP announcements. QEMU sends RARP
+			// after live migration.
+			if shouldHandleLiveMigration {
+				podMultiChassisOpts[libovsdbops.ActivationStrategy] = "rarp,garp"
+			}
+			klog.Infof("multi-chassis: setting opts %v for pod %s/%s (isTarget=%v)",
+				podMultiChassisOpts, pod.Namespace, pod.Name, shouldHandleLiveMigration)
+		}
 	}
 
 	// we need to create a logical port for all local pods
@@ -354,8 +400,27 @@ func (bsnc *BaseUserDefinedNetworkController) addLogicalPortToNetworkForNAD(pod 
 	isLocalPod := bsnc.isPodScheduledinLocalZone(pod)
 	requiresLogicalPort := isLocalPod || bsnc.isLayer2WithInterconnectTransport()
 
+	// For IC L2 with multi-chassis during active migration, suppress creation
+	// of the remote source LSP on the target zone only. The target zone creates
+	// its own local target LSP (with the same tunnel key) that replaces it.
+	// Other zones (intermediate nodes) must keep the remote source LSP so
+	// traffic can still reach the VM during migration.
+	isTargetZone := kubevirtLiveMigrationStatus != nil &&
+		bsnc.isPodScheduledinLocalZone(kubevirtLiveMigrationStatus.TargetPod)
+	isSourcePod := kubevirtLiveMigrationStatus != nil &&
+		pod.Name == kubevirtLiveMigrationStatus.SourcePod.Name
+	suppressRemoteLSP := multiChassisEnabled &&
+		!isLocalPod &&
+		bsnc.isLayer2WithInterconnectTransport() &&
+		isTargetZone && isSourcePod &&
+		kubevirtLiveMigrationStatus.State != kubevirt.LiveMigrationSucceeded &&
+		kubevirtLiveMigrationStatus.State != kubevirt.LiveMigrationFailed
+	if suppressRemoteLSP {
+		requiresLogicalPort = false
+	}
+
 	if requiresLogicalPort {
-		ops, lsp, podAnnotation, newlyCreated, err = bsnc.addLogicalPortToNetwork(pod, nadKey, network, lspEnabled)
+		ops, lsp, podAnnotation, newlyCreated, err = bsnc.addLogicalPortToNetwork(pod, nadKey, network, lspEnabled, podMultiChassisOpts)
 		if err != nil {
 			return err
 		}
@@ -377,14 +442,63 @@ func (bsnc *BaseUserDefinedNetworkController) addLogicalPortToNetworkForNAD(pod 
 			return err
 		}
 		bsnc.logicalPortCache.remove(pod, nadKey)
+	} else if suppressRemoteLSP {
+		// Delete stale remote counterpart LSP during multi-chassis migration
+		// on IC L2. This is idempotent — if the LSP doesn't exist, no ops
+		// are generated.
+		logicalPort := bsnc.GetLogicalPortName(pod, nadKey)
+		delOps, err := bsnc.delLSPOps(logicalPort, switchName, "")
+		if err != nil {
+			return err
+		}
+		ops = append(ops, delOps...)
+		bsnc.logicalPortCache.remove(pod, nadKey)
 	}
 
-	if shouldHandleLiveMigration && kubevirtLiveMigrationStatus.IsTargetDomainReady() {
-		hasSourcePodLogicalPort := bsnc.isPodScheduledinLocalZone(kubevirtLiveMigrationStatus.SourcePod) || bsnc.isLayer2WithInterconnectTransport()
+	if shouldHandleLiveMigration {
+		sourceIsLocal := bsnc.isPodScheduledinLocalZone(kubevirtLiveMigrationStatus.SourcePod)
+		hasSourcePodLogicalPort := sourceIsLocal || bsnc.isLayer2WithInterconnectTransport()
 		if hasSourcePodLogicalPort {
-			ops, err = bsnc.disableLiveMigrationSourceLSPOps(kubevirtLiveMigrationStatus, nadKey, ops)
-			if err != nil {
-				return fmt.Errorf("failed to create LSP ops for source pod during Live-migration status: %w", err)
+			if multiChassisEnabled {
+				if !sourceIsLocal && bsnc.isLayer2WithInterconnectTransport() {
+					// On target zone during IC L2 migration: the remote source
+					// LSP must be deleted so the local target LSP (with the same
+					// tunnel key) can take its place. Delete during InProgress,
+					// TargetDomainReady, and Succeeded states (Succeeded handles
+					// the case where InProgress wasn't processed yet).
+					if kubevirtLiveMigrationStatus.State != kubevirt.LiveMigrationFailed {
+						sourceLSPName := bsnc.GetLogicalPortName(kubevirtLiveMigrationStatus.SourcePod, nadKey)
+						delOps, err := bsnc.delLSPOps(sourceLSPName, switchName, "")
+						if err != nil {
+							return fmt.Errorf("failed to delete remote source LSP during IC L2 migration: %w", err)
+						}
+						ops = append(ops, delOps...)
+						bsnc.logicalPortCache.remove(kubevirtLiveMigrationStatus.SourcePod, nadKey)
+					}
+				} else if kubevirtLiveMigrationStatus.State == kubevirt.LiveMigrationSucceeded {
+					// Migration succeeded — delete the local source LSP. The
+					// remote target LSP (created above by addLogicalPortToNetwork
+					// with the same tunnel key) takes its place. Both ops are in
+					// the same transaction to avoid tunnel key conflicts.
+					sourceLSPName := bsnc.GetLogicalPortName(kubevirtLiveMigrationStatus.SourcePod, nadKey)
+					delOps, err := bsnc.delLSPOps(sourceLSPName, switchName, "")
+					if err != nil {
+						return fmt.Errorf("failed to delete source LSP after successful migration: %w", err)
+					}
+					ops = append(ops, delOps...)
+					bsnc.logicalPortCache.remove(kubevirtLiveMigrationStatus.SourcePod, nadKey)
+				} else {
+					// Migration in progress — set multi-chassis on source LSP.
+					ops, err = bsnc.setMultiChassisOnSourceLSPOps(kubevirtLiveMigrationStatus, nadKey, ops)
+					if err != nil {
+						return fmt.Errorf("failed to set multi-chassis on source LSP during live migration: %w", err)
+					}
+				}
+			} else if kubevirtLiveMigrationStatus.IsTargetDomainReady() {
+				ops, err = bsnc.disableLiveMigrationSourceLSPOps(kubevirtLiveMigrationStatus, nadKey, ops)
+				if err != nil {
+					return fmt.Errorf("failed to create LSP ops for source pod during Live-migration status: %w", err)
+				}
 			}
 		}
 	}
@@ -1099,17 +1213,118 @@ func (bsnc *BaseUserDefinedNetworkController) enableSourceLSPFailedLiveMigration
 		kubevirtLiveMigrationStatus.State != kubevirt.LiveMigrationFailed {
 		return nil
 	}
+
+	if config.OVNKubernetesFeature.EnableMultiChassisLiveMigration {
+		sourceIsLocal := bsnc.isPodScheduledinLocalZone(kubevirtLiveMigrationStatus.SourcePod)
+		if !sourceIsLocal && bsnc.isLayer2WithInterconnectTransport() {
+			// On target zone during IC L2: the remote source LSP was deleted
+			// during migration. Don't try to revert it — the source zone
+			// manages its own local source LSP. The remote source LSP will
+			// be recreated when the source pod event is processed.
+			return nil
+		}
+		// With multi-chassis, source LSP was never disabled — just revert
+		// multi-chassis options (requested-chassis back to source only, remove activation-strategy).
+		ops, err := bsnc.revertMultiChassisOnLSPOps(kubevirtLiveMigrationStatus.SourcePod, nadKey, nil)
+		if err != nil {
+			return fmt.Errorf("failed to revert multi-chassis on source LSP after migration failed: %w", err)
+		}
+		_, err = libovsdbops.TransactAndCheck(bsnc.nbClient, ops)
+		if err != nil {
+			return fmt.Errorf("failed transacting operations %+v: %w", ops, err)
+		}
+		return nil
+	}
+
 	// make sure sourcePod lsp is enabled if migration failed after DomainReady was set.
 	ops, sourcePodLsp, err := bsnc.setPodLogicalSwitchPortAddressesAndEnabledField(kubevirtLiveMigrationStatus.SourcePod, nadKey, mac, ips, true, nil)
 	if err != nil {
 		return fmt.Errorf("failed to set source Pod lsp to enabled after migration failed: %w", err)
 	}
+
 	_, err = libovsdbops.TransactAndCheckAndSetUUIDs(bsnc.nbClient, sourcePodLsp, ops)
 	if err != nil {
 		return fmt.Errorf("failed transacting operations %+v: %w", ops, err)
 	}
 
 	return nil
+}
+
+// setMultiChassisOnSourceLSPOps generates OVSDB ops to set requested-chassis=src,dst
+// on the source pod's LSP during live migration. The source LSP does NOT get
+// activation-strategy — only the target LSP gets that (set via addLogicalPortToNetwork).
+func (bsnc *BaseUserDefinedNetworkController) setMultiChassisOnSourceLSPOps(
+	kubevirtLiveMigrationStatus *kubevirt.LiveMigrationStatus,
+	nadKey string, ops []ovsdb.Operation,
+) ([]ovsdb.Operation, error) {
+	sourceChassis, err := bsnc.getChassisIDForNode(kubevirtLiveMigrationStatus.SourcePod.Spec.NodeName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get source chassis ID: %w", err)
+	}
+	targetChassis, err := bsnc.getChassisIDForNode(kubevirtLiveMigrationStatus.TargetPod.Spec.NodeName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get target chassis ID: %w", err)
+	}
+
+	sourceLSPName := bsnc.GetLogicalPortName(kubevirtLiveMigrationStatus.SourcePod, nadKey)
+	return bsnc.updateLSPOptionsOps(sourceLSPName, kubevirtLiveMigrationStatus.SourcePod, ops, map[string]string{
+		libovsdbops.RequestedChassis: sourceChassis + "," + targetChassis,
+	})
+}
+
+// revertMultiChassisOnLSPOps reverts a pod's LSP to single requested-chassis
+// and removes activation-strategy. Used during switchover and failed migration rollback.
+func (bsnc *BaseUserDefinedNetworkController) revertMultiChassisOnLSPOps(
+	pod *corev1.Pod, nadKey string, ops []ovsdb.Operation,
+) ([]ovsdb.Operation, error) {
+	chassisID, err := bsnc.getChassisIDForNode(pod.Spec.NodeName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get chassis ID for node %s: %w", pod.Spec.NodeName, err)
+	}
+
+	lspName := bsnc.GetLogicalPortName(pod, nadKey)
+	return bsnc.updateLSPOptionsOps(lspName, pod, ops, map[string]string{
+		libovsdbops.RequestedChassis: chassisID,
+	})
+}
+
+// updateLSPOptionsOps reads the existing LSP, merges the given options into
+// its Options map (or removes keys whose values are empty), and generates
+// OVSDB update ops. This preserves existing options like iface-id-ver.
+func (bsnc *BaseUserDefinedNetworkController) updateLSPOptionsOps(
+	lspName string, pod *corev1.Pod, ops []ovsdb.Operation, optionsToSet map[string]string,
+) ([]ovsdb.Operation, error) {
+	existingLSP, err := libovsdbops.GetLogicalSwitchPort(bsnc.nbClient, &nbdb.LogicalSwitchPort{Name: lspName})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get existing LSP %s: %w", lspName, err)
+	}
+
+	switchName, err := bsnc.getExpectedSwitchName(pod)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get switch name for pod: %w", err)
+	}
+
+	// Start with existing options and merge the new ones
+	options := make(map[string]string, len(existingLSP.Options))
+	for k, v := range existingLSP.Options {
+		options[k] = v
+	}
+	// Remove activation-strategy by default (revert case), it gets added back if present in optionsToSet
+	delete(options, libovsdbops.ActivationStrategy)
+	for k, v := range optionsToSet {
+		options[k] = v
+	}
+
+	lsp := &nbdb.LogicalSwitchPort{Name: lspName}
+	lsp.Options = options
+
+	ops, err = libovsdbops.UpdateLogicalSwitchPortsOnSwitchWithCustomFieldsOps(
+		bsnc.nbClient, ops, &nbdb.LogicalSwitch{Name: switchName},
+		[]libovsdbops.ModelUpdateField{libovsdbops.LogicalSwitchPortOptions}, lsp)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create ops to update options on LSP %s: %w", lspName, err)
+	}
+	return ops, nil
 }
 
 func shouldAddPort(oldPod, newPod *corev1.Pod, inRetryCache bool) bool {

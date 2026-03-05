@@ -102,6 +102,7 @@ OVN_STATELESS_NETPOL_ENABLE="false"
 OVN_ENABLE_INTERCONNECT=
 OVN_ENABLE_OVNKUBE_IDENTITY="true"
 OVN_ENABLE_PERSISTENT_IPS=
+OVN_ENABLE_MULTI_CHASSIS_LIVE_MIGRATION=
 OVN_ENABLE_SVC_TEMPLATE_SUPPORT="true"
 OVN_NETWORK_QOS_ENABLE=
 OVN_ENABLE_DNSNAMERESOLVER="false"
@@ -399,6 +400,9 @@ while [ "$1" != "" ]; do
   --enable-persistent-ips)
     OVN_ENABLE_PERSISTENT_IPS=$VALUE
     ;;
+  --enable-multi-chassis-live-migration)
+    OVN_ENABLE_MULTI_CHASSIS_LIVE_MIGRATION=$VALUE
+    ;;
   --enable-svc-template-support)
     OVN_ENABLE_SVC_TEMPLATE_SUPPORT=$VALUE
     ;;
@@ -655,6 +659,9 @@ echo "ovn_northd_backoff_interval: ${ovn_northd_backoff_interval}"
 ovn_enable_persistent_ips=${OVN_ENABLE_PERSISTENT_IPS}
 echo "ovn_enable_persistent_ips: ${ovn_enable_persistent_ips}"
 
+ovn_enable_multi_chassis_live_migration=${OVN_ENABLE_MULTI_CHASSIS_LIVE_MIGRATION}
+echo "ovn_enable_multi_chassis_live_migration: ${ovn_enable_multi_chassis_live_migration}"
+
 ovn_enable_svc_template_support=${OVN_ENABLE_SVC_TEMPLATE_SUPPORT}
 echo "ovn_enable_svc_template_support: ${ovn_enable_svc_template_support}"
 
@@ -904,6 +911,7 @@ ovn_image=${ovnkube_image} \
   ovn_enable_ovnkube_identity=${ovn_enable_ovnkube_identity} \
   ovn_network_qos_enable=${ovn_network_qos_enable} \
   ovn_enable_persistent_ips=${ovn_enable_persistent_ips} \
+  ovn_enable_multi_chassis_live_migration=${ovn_enable_multi_chassis_live_migration} \
   ovn_enable_svc_template_support=${ovn_enable_svc_template_support} \
   ovn_enable_dnsnameresolver=${ovn_enable_dnsnameresolver} \
   ovn_allow_icmp_netpol=${ovn_allow_icmp_netpol} \
@@ -962,6 +970,7 @@ ovn_image=${ovnkube_image} \
   ovn_v4_transit_subnet=${ovn_v4_transit_subnet} \
   ovn_v6_transit_subnet=${ovn_v6_transit_subnet} \
   ovn_enable_persistent_ips=${ovn_enable_persistent_ips} \
+  ovn_enable_multi_chassis_live_migration=${ovn_enable_multi_chassis_live_migration} \
   ovn_enable_dnsnameresolver=${ovn_enable_dnsnameresolver} \
   ovn_allow_icmp_netpol=${ovn_allow_icmp_netpol} \
   ovn_observ_enable=${ovn_observ_enable} \
@@ -1070,6 +1079,7 @@ ovn_image=${ovnkube_image} \
   ovn_network_qos_enable=${ovn_network_qos_enable} \
   ovn_northd_backoff_interval=${ovn_northd_backoff_interval} \
   ovn_enable_persistent_ips=${ovn_enable_persistent_ips} \
+  ovn_enable_multi_chassis_live_migration=${ovn_enable_multi_chassis_live_migration} \
   ovn_enable_svc_template_support=${ovn_enable_svc_template_support} \
   ovn_enable_dnsnameresolver=${ovn_enable_dnsnameresolver} \
   ovn_allow_icmp_netpol=${ovn_allow_icmp_netpol} \
@@ -1158,6 +1168,7 @@ ovn_image=${ovnkube_image} \
   ovn_enable_ovnkube_identity=${ovn_enable_ovnkube_identity} \
   ovn_network_qos_enable=${ovn_network_qos_enable} \
   ovn_enable_persistent_ips=${ovn_enable_persistent_ips} \
+  ovn_enable_multi_chassis_live_migration=${ovn_enable_multi_chassis_live_migration} \
   ovn_enable_svc_template_support=${ovn_enable_svc_template_support} \
   ovn_enable_dnsnameresolver=${ovn_enable_dnsnameresolver} \
   ovn_observ_enable=${ovn_observ_enable} \
@@ -1241,6 +1252,7 @@ ovn_image=${ovnkube_image} \
   ovn_network_qos_enable=${ovn_network_qos_enable} \
   ovn_northd_backoff_interval=${ovn_enable_backoff_interval} \
   ovn_enable_persistent_ips=${ovn_enable_persistent_ips} \
+  ovn_enable_multi_chassis_live_migration=${ovn_enable_multi_chassis_live_migration} \
   ovn_enable_svc_template_support=${ovn_enable_svc_template_support} \
   ovn_enable_dnsnameresolver=${ovn_enable_dnsnameresolver} \
   ovn_allow_icmp_netpol=${ovn_allow_icmp_netpol} \

@@ -2,6 +2,7 @@ package ovn
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"time"
@@ -18,6 +19,8 @@ import (
 	ktypes "k8s.io/apimachinery/pkg/types"
 	knet "k8s.io/utils/net"
 	"k8s.io/utils/ptr"
+
+	libovsdbclient "github.com/ovn-kubernetes/libovsdb/client"
 
 	ovnkcnitypes "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/cni/types"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/config"
@@ -45,15 +48,21 @@ var (
 
 type liveMigrationPodInfo struct {
 	podPhase           corev1.PodPhase
+	labels             map[string]string
 	annotation         map[string]string
 	creationTimestamp  metav1.Time
 	expectedLspEnabled lspEnableValue
+	// expectedLspOptions specifies LSP options that should be verified after migration.
+	// If nil, options are not explicitly checked beyond defaults.
+	expectedLspOptions map[string]string
 }
 
 type liveMigrationInfo struct {
-	vmName        string
-	sourcePodInfo liveMigrationPodInfo
-	targetPodInfo liveMigrationPodInfo
+	vmName                string
+	sourcePodInfo         liveMigrationPodInfo
+	targetPodInfo         liveMigrationPodInfo
+	multiChassisEnabled   bool
+	expectSourceLSPDeleted bool // source LSP is deleted (e.g., after successful multi-chassis migration)
 }
 
 var _ = Describe("OVN Multi-Homed pod operations for layer 2 network", func() {
@@ -239,6 +248,9 @@ var _ = Describe("OVN Multi-Homed pod operations for layer 2 network", func() {
 			)
 			sourcePodInfo := dummyL2TestPod(ns, netInfo, sourcePodInfoIdx, userDefinedNetworkIdx)
 			setupConfig(netInfo, testConfig, config.GatewayModeShared)
+			if migrationInfo.multiChassisEnabled {
+				config.OVNKubernetesFeature.EnableMultiChassisLiveMigration = true
+			}
 			app.Action = func(*cli.Context) error {
 				sourcePod := newMultiHomedKubevirtPod(
 					migrationInfo.vmName,
@@ -300,12 +312,22 @@ var _ = Describe("OVN Multi-Homed pod operations for layer 2 network", func() {
 
 				By("asserting the OVN entities provisioned in the NBDB are the expected ones after migration")
 				expectedPodLspEnabled := map[string]*bool{}
-				expectedPodLspEnabled[sourcePodInfo.podName] = migrationInfo.sourcePodInfo.expectedLspEnabled
+				expectedPodLspOptions := map[string]map[string]string{}
 
-				testPods := []testPod{sourcePodInfo}
+				testPods := []testPod{}
+				if !migrationInfo.expectSourceLSPDeleted {
+					testPods = append(testPods, sourcePodInfo)
+					expectedPodLspEnabled[sourcePodInfo.podName] = migrationInfo.sourcePodInfo.expectedLspEnabled
+					if migrationInfo.sourcePodInfo.expectedLspOptions != nil {
+						expectedPodLspOptions[sourcePodInfo.podName] = migrationInfo.sourcePodInfo.expectedLspOptions
+					}
+				}
 				if !util.PodCompleted(targetKvPod) {
 					testPods = append(testPods, targetPodInfo)
 					expectedPodLspEnabled[targetPodInfo.podName] = migrationInfo.targetPodInfo.expectedLspEnabled
+					if migrationInfo.targetPodInfo.expectedLspOptions != nil {
+						expectedPodLspOptions[targetPodInfo.podName] = migrationInfo.targetPodInfo.expectedLspOptions
+					}
 				}
 				Eventually(fakeOvn.nbClient).Should(
 					libovsdbtest.HaveData(
@@ -313,7 +335,7 @@ var _ = Describe("OVN Multi-Homed pod operations for layer 2 network", func() {
 							fakeOvn,
 							testPods,
 							expectationOptions...,
-						).expectedLogicalSwitchesAndPortsWithLspEnabled(nodeName, expectedPodLspEnabled)...))
+						).expectedLogicalSwitchesAndPortsWithLspEnabledAndOptions(nodeName, expectedPodLspEnabled, expectedPodLspOptions)...))
 				return nil
 			}
 
@@ -379,7 +401,214 @@ var _ = Describe("OVN Multi-Homed pod operations for layer 2 network", func() {
 			icClusterTestConfiguration(),
 			failedMigrationInfo(),
 		),
+
+		// Multi-chassis live migration tests
+		Entry("multi-chassis: on a layer2 secondary network, when target pod is not yet ready",
+			dummySecondaryLayer2UserDefinedNetwork("100.200.0.0/16"),
+			nonICClusterTestConfiguration(),
+			multiChassisNotReadyMigrationInfo(),
+		),
+
+		Entry("multi-chassis: on a layer2 secondary network, when target pod is ready",
+			dummySecondaryLayer2UserDefinedNetwork("100.200.0.0/16"),
+			nonICClusterTestConfiguration(),
+			multiChassisReadyMigrationInfo(),
+		),
+
+		Entry("multi-chassis: on a layer2 secondary network and an IC cluster, when target pod is not yet ready",
+			dummySecondaryLayer2UserDefinedNetwork("100.200.0.0/16"),
+			icClusterTestConfiguration(),
+			multiChassisNotReadyMigrationInfo(),
+		),
+
+		Entry("multi-chassis: on a layer2 secondary network and an IC cluster, when target pod is ready",
+			dummySecondaryLayer2UserDefinedNetwork("100.200.0.0/16"),
+			icClusterTestConfiguration(),
+			multiChassisReadyMigrationInfo(),
+		),
+
+		Entry("multi-chassis: on a layer2 secondary network and an IC cluster, when target pod failed",
+			dummySecondaryLayer2UserDefinedNetwork("100.200.0.0/16"),
+			icClusterTestConfiguration(),
+			multiChassisFailedMigrationInfo(),
+		),
+
+		Entry("multi-chassis: on a layer2 secondary network and an IC cluster, when migration succeeded",
+			dummySecondaryLayer2UserDefinedNetwork("100.200.0.0/16"),
+			icClusterTestConfiguration(),
+			multiChassisSucceededMigrationInfo(),
+		),
+
+		Entry("multi-chassis: on a layer2 primary network, when target pod is not yet ready",
+			dummyPrimaryLayer2UserDefinedNetwork("100.200.0.0/16"),
+			nonICClusterTestConfiguration(),
+			multiChassisNotReadyMigrationInfo(),
+		),
+
+		Entry("multi-chassis: on a layer2 primary network, when target pod is ready",
+			dummyPrimaryLayer2UserDefinedNetwork("100.200.0.0/16"),
+			nonICClusterTestConfiguration(),
+			multiChassisReadyMigrationInfo(),
+		),
+
+		Entry("multi-chassis: on a layer2 primary network and an IC cluster, when target pod is not yet ready",
+			dummyPrimaryLayer2UserDefinedNetwork("100.200.0.0/16"),
+			icClusterTestConfiguration(),
+			multiChassisNotReadyMigrationInfo(),
+		),
+
+		Entry("multi-chassis: on a layer2 primary network and an IC cluster, when target pod is ready",
+			dummyPrimaryLayer2UserDefinedNetwork("100.200.0.0/16"),
+			icClusterTestConfiguration(),
+			multiChassisReadyMigrationInfo(),
+		),
+
+		Entry("multi-chassis: on a layer2 primary network and an IC cluster, when target pod failed",
+			dummyPrimaryLayer2UserDefinedNetwork("100.200.0.0/16"),
+			icClusterTestConfiguration(),
+			multiChassisFailedMigrationInfo(),
+		),
+
+		Entry("multi-chassis: on a layer2 primary network and an IC cluster, when migration succeeded",
+			dummyPrimaryLayer2UserDefinedNetwork("100.200.0.0/16"),
+			icClusterTestConfiguration(),
+			multiChassisSucceededMigrationInfo(),
+		),
+
+		Entry("multi-chassis: on a layer2 secondary network, when migration succeeded",
+			dummySecondaryLayer2UserDefinedNetwork("100.200.0.0/16"),
+			nonICClusterTestConfiguration(),
+			multiChassisSucceededMigrationInfo(),
+		),
+
+		Entry("multi-chassis: on a layer2 primary network, when migration succeeded",
+			dummyPrimaryLayer2UserDefinedNetwork("100.200.0.0/16"),
+			nonICClusterTestConfiguration(),
+			multiChassisSucceededMigrationInfo(),
+		),
 	)
+
+	// Cross-zone IC L2 multi-chassis tests verify the topology changes during
+	// live migration when source and target pods are in different zones.
+	// On IC L2, each zone only needs its local LSP during migration — remote
+	// counterpart LSPs are suppressed to avoid conflicting tunnel keys.
+	Describe("multi-chassis IC L2 cross-zone topology during live migration", func() {
+		const (
+			remoteNodeName = "test-node2"
+			remoteZone     = "other-zone"
+		)
+
+		DescribeTable("suppresses remote counterpart LSPs during migration",
+			func(netInfo userDefinedNetInfo) {
+				const vmName = "my-vm"
+				ipamClaim := ipamclaimsapi.IPAMClaim{
+					ObjectMeta: metav1.ObjectMeta{
+						Namespace: ns,
+						Name:      netInfo.netName + "-" + vmName,
+					},
+					Spec: ipamclaimsapi.IPAMClaimSpec{
+						Network:   netInfo.netName,
+						Interface: "net1",
+					},
+				}
+				netInfo.allowPersistentIPs = true
+				netInfo.ipamClaimReference = ipamClaim.Name
+
+				const (
+					sourcePodInfoIdx      = 0
+					targetPodInfoIdx      = 1
+					userDefinedNetworkIdx = 0
+				)
+				sourcePodInfo := dummyL2TestPod(ns, netInfo, sourcePodInfoIdx, userDefinedNetworkIdx)
+				setupConfig(netInfo, icClusterTestConfiguration(), config.GatewayModeShared)
+				config.OVNKubernetesFeature.EnableMultiChassisLiveMigration = true
+
+				app.Action = func(*cli.Context) error {
+					sourcePod := newMultiHomedKubevirtPod(
+						vmName,
+						liveMigrationPodInfo{
+							podPhase:          corev1.PodRunning,
+							creationTimestamp: metav1.NewTime(time.Now().Add(-time.Hour)),
+						},
+						sourcePodInfo,
+						netInfo)
+
+					const nodeIPv4CIDR = "192.168.126.202/24"
+					testNode, err := newNodeWithUserDefinedNetworks(nodeName, nodeIPv4CIDR)
+					Expect(err).NotTo(HaveOccurred())
+
+					// Create a remote node in a different zone
+					remoteNode, err := newNodeWithUserDefinedNetworks(remoteNodeName, "192.168.127.202/24")
+					Expect(err).NotTo(HaveOccurred())
+					remoteNode.Annotations["k8s.ovn.org/zone-name"] = remoteZone
+
+					Expect(setupFakeOvnForLayer2Topology(fakeOvn, initialDB, netInfo,
+						[]corev1.Node{*testNode, *remoteNode}, sourcePodInfo, sourcePod,
+						&ipamclaimsapi.IPAMClaimList{Items: []ipamclaimsapi.IPAMClaim{ipamClaim}}),
+					).To(Succeed())
+					defer fakeOvn.networkManager.Stop()
+
+					By("verifying source pod LSP exists before migration")
+					udnController, ok := fakeOvn.userDefinedNetworkControllers[userDefinedNetworkName]
+					Expect(ok).To(BeTrue())
+
+					sourceLSPName := util.GetUserDefinedNetworkLogicalPortName(ns, sourcePodInfo.podName, ns+"/"+nadName)
+					Eventually(func() error {
+						_, err := libovsdbops.GetLogicalSwitchPort(udnController.bnc.nbClient, &nbdb.LogicalSwitchPort{Name: sourceLSPName})
+						return err
+					}).WithTimeout(2 * time.Second).Should(Succeed())
+
+					By("creating target pod on the remote node to trigger migration")
+					targetPodInfo := dummyL2TestPod(ns, netInfo, targetPodInfoIdx, userDefinedNetworkIdx)
+					targetKvPod := newMultiHomedKubevirtPod(
+						vmName,
+						liveMigrationPodInfo{
+							podPhase:          corev1.PodRunning,
+							creationTimestamp: metav1.NewTime(time.Now()),
+						},
+						targetPodInfo,
+						netInfo)
+					// Override target pod's node to the remote node
+					targetKvPod.Spec.NodeName = remoteNodeName
+
+					_, err = fakeOvn.fakeClient.KubeClient.CoreV1().Pods(targetKvPod.Namespace).Create(context.Background(), targetKvPod, metav1.CreateOptions{})
+					Expect(err).NotTo(HaveOccurred())
+
+					By("verifying source pod LSP has multi-chassis options")
+					localChassisID := chassisIDForNode(nodeName)
+					remoteChassisID := chassisIDForNode(remoteNodeName)
+					expectedRequestedChassis := localChassisID + "," + remoteChassisID
+
+					Eventually(func() string {
+						lsp, err := libovsdbops.GetLogicalSwitchPort(udnController.bnc.nbClient, &nbdb.LogicalSwitchPort{Name: sourceLSPName})
+						if err != nil {
+							return ""
+						}
+						return lsp.Options[libovsdbops.RequestedChassis]
+					}).WithTimeout(2 * time.Second).Should(Equal(expectedRequestedChassis))
+
+					By("verifying NO remote LSP is created for the target pod on the local zone")
+					targetLSPName := util.GetUserDefinedNetworkLogicalPortName(ns, targetPodInfo.podName, ns+"/"+nadName)
+					Consistently(func() bool {
+						_, err := libovsdbops.GetLogicalSwitchPort(udnController.bnc.nbClient, &nbdb.LogicalSwitchPort{Name: targetLSPName})
+						return errors.Is(err, libovsdbclient.ErrNotFound)
+					}).WithTimeout(1 * time.Second).Should(BeTrue(),
+						"remote target LSP should NOT exist on the source zone during IC L2 multi-chassis migration")
+
+					return nil
+				}
+				Expect(app.Run([]string{app.Name})).To(Succeed())
+			},
+
+			Entry("on a layer2 secondary network",
+				dummySecondaryLayer2UserDefinedNetwork("100.200.0.0/16"),
+			),
+
+			Entry("on a layer2 primary network",
+				dummyPrimaryLayer2UserDefinedNetwork("100.200.0.0/16"),
+			),
+		)
+	})
 
 	DescribeTable(
 		"user-defined network controller DB entities are properly cleaned up",
@@ -1427,6 +1656,116 @@ func failedMigrationInfo() *liveMigrationInfo {
 			podPhase:           corev1.PodRunning,
 			creationTimestamp:  metav1.NewTime(time.Now().Add(-time.Hour)),
 			expectedLspEnabled: lspEnableExplicitlyTrue,
+		},
+		targetPodInfo: liveMigrationPodInfo{
+			podPhase:          corev1.PodFailed,
+			creationTimestamp: metav1.NewTime(time.Now()),
+		},
+	}
+}
+
+// multiChassisNotReadyMigrationInfo returns migration info for InProgress state
+// with multi-chassis enabled. Both LSPs get requested-chassis=src,dst.
+// Only the target LSP gets activation-strategy=rarp,garp. Enabled is NOT set.
+func multiChassisNotReadyMigrationInfo() *liveMigrationInfo {
+	const vmName = "my-vm"
+	chassisID := chassisIDForNode(nodeName)
+	return &liveMigrationInfo{
+		vmName:              vmName,
+		multiChassisEnabled: true,
+		sourcePodInfo: liveMigrationPodInfo{
+			podPhase:           corev1.PodRunning,
+			creationTimestamp:  metav1.NewTime(time.Now().Add(-time.Hour)),
+			expectedLspEnabled: lspEnableNotSpecified,
+			expectedLspOptions: map[string]string{
+				libovsdbops.RequestedChassis: chassisID + "," + chassisID,
+			},
+		},
+		targetPodInfo: liveMigrationPodInfo{
+			podPhase:           corev1.PodRunning,
+			creationTimestamp:  metav1.NewTime(time.Now()),
+			expectedLspEnabled: lspEnableNotSpecified,
+			expectedLspOptions: map[string]string{
+				libovsdbops.RequestedChassis:  chassisID + "," + chassisID,
+				libovsdbops.ActivationStrategy: "rarp,garp",
+			},
+		},
+	}
+}
+
+// multiChassisReadyMigrationInfo returns migration info for TargetDomainReady state
+// with multi-chassis enabled. Both LSPs have requested-chassis=src,dst.
+// Only target LSP has activation-strategy=rarp,garp. Enabled NOT set.
+func multiChassisReadyMigrationInfo() *liveMigrationInfo {
+	const vmName = "my-vm"
+	chassisID := chassisIDForNode(nodeName)
+	return &liveMigrationInfo{
+		vmName:              vmName,
+		multiChassisEnabled: true,
+		sourcePodInfo: liveMigrationPodInfo{
+			podPhase:           corev1.PodRunning,
+			creationTimestamp:  metav1.NewTime(time.Now().Add(-time.Hour)),
+			expectedLspEnabled: lspEnableNotSpecified,
+			expectedLspOptions: map[string]string{
+				libovsdbops.RequestedChassis: chassisID + "," + chassisID,
+			},
+		},
+		targetPodInfo: liveMigrationPodInfo{
+			podPhase:           corev1.PodRunning,
+			creationTimestamp:  metav1.NewTime(time.Now()),
+			annotation:         map[string]string{kubevirtv1.MigrationTargetReadyTimestamp: "some-timestamp"},
+			expectedLspEnabled: lspEnableNotSpecified,
+			expectedLspOptions: map[string]string{
+				libovsdbops.RequestedChassis:  chassisID + "," + chassisID,
+				libovsdbops.ActivationStrategy: "rarp,garp",
+			},
+		},
+	}
+}
+
+// multiChassisSucceededMigrationInfo returns migration info for a completed
+// migration with multi-chassis enabled. Target pod has kubevirt.io/nodeName label.
+// Source LSP is deleted — the target LSP takes its place with the same tunnel key.
+func multiChassisSucceededMigrationInfo() *liveMigrationInfo {
+	const vmName = "my-vm"
+	chassisID := chassisIDForNode(nodeName)
+	return &liveMigrationInfo{
+		vmName:                 vmName,
+		multiChassisEnabled:    true,
+		expectSourceLSPDeleted: true,
+		sourcePodInfo: liveMigrationPodInfo{
+			podPhase:          corev1.PodRunning,
+			creationTimestamp: metav1.NewTime(time.Now().Add(-time.Hour)),
+		},
+		targetPodInfo: liveMigrationPodInfo{
+			podPhase:         corev1.PodRunning,
+			creationTimestamp: metav1.NewTime(time.Now()),
+			labels:           map[string]string{kubevirtv1.NodeNameLabel: nodeName}, // matches pod's spec.nodeName
+			annotation:       map[string]string{kubevirtv1.MigrationTargetReadyTimestamp: "some-timestamp"},
+			expectedLspEnabled: lspEnableNotSpecified,
+			expectedLspOptions: map[string]string{
+				libovsdbops.RequestedChassis: chassisID,
+			},
+		},
+	}
+}
+
+// multiChassisFailedMigrationInfo returns migration info for failed migration
+// with multi-chassis enabled. Enabled flag is NOT set on any LSP.
+// Multi-chassis options reverted to single chassis.
+func multiChassisFailedMigrationInfo() *liveMigrationInfo {
+	const vmName = "my-vm"
+	chassisID := chassisIDForNode(nodeName)
+	return &liveMigrationInfo{
+		vmName:              vmName,
+		multiChassisEnabled: true,
+		sourcePodInfo: liveMigrationPodInfo{
+			podPhase:           corev1.PodRunning,
+			creationTimestamp:  metav1.NewTime(time.Now().Add(-time.Hour)),
+			expectedLspEnabled: lspEnableNotSpecified,
+			expectedLspOptions: map[string]string{
+				libovsdbops.RequestedChassis: chassisID,
+			},
 		},
 		targetPodInfo: liveMigrationPodInfo{
 			podPhase:          corev1.PodFailed,

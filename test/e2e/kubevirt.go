@@ -1890,6 +1890,8 @@ ip route add %[3]s via %[4]s
 				Expect(err).NotTo(HaveOccurred(), output)
 			}
 
+			d.NBDBMonitorDaemonSet()
+
 			vmiName := td.resource.cmd()
 			vmi = &kubevirtv1.VirtualMachineInstance{
 				ObjectMeta: metav1.ObjectMeta{
@@ -2079,7 +2081,7 @@ ip route add %[3]s via %[4]s
 				test:     liveMigrate,
 				topology: udnv1.NetworkTopologyLayer2,
 			}),
-			Entry(nil, testData{
+			FEntry(nil, testData{
 				resource: virtualMachineWithUDN,
 				test:     liveMigrate,
 				topology: udnv1.NetworkTopologyLayer2,

@@ -15,4 +15,8 @@ const (
 	// GatewayMTU can be used by LogicalRouterPort to specify the MTU for the gateway port.
 	// If set, logical flows will be added to router pipeline to check packet length.
 	GatewayMTU = "gateway_mtu"
+	// ActivationStrategy can be used by LogicalSwitchPort to specify how the port
+	// should be activated when multiple requested-chassis are set. When set to "rarp",
+	// the port is activated on the chassis that receives an RARP packet from the port.
+	ActivationStrategy = "activation-strategy"
 )

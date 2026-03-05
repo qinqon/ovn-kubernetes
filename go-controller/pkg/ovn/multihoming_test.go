@@ -82,6 +82,9 @@ type userDefinedNetworkExpectationMachine struct {
 	gatewayConfig         *util.L3GatewayConfig
 	isInterconnectCluster bool
 	hasClusterPortGroup   bool
+	// expectedPodLspOptions maps pod names to additional LSP options to verify.
+	// Set via expectedLogicalSwitchesAndPortsWithLspEnabledAndOptions.
+	expectedPodLspOptions map[string]map[string]string
 }
 
 func newUserDefinedNetworkExpectationMachine(fakeOvn *FakeOVN, pods []testPod, opts ...option) *userDefinedNetworkExpectationMachine {
@@ -116,6 +119,14 @@ func withClusterPortGroup() option {
 
 func (em *userDefinedNetworkExpectationMachine) expectedLogicalSwitchesAndPorts(localNode string) []libovsdbtest.TestData {
 	return em.expectedLogicalSwitchesAndPortsWithLspEnabled(localNode, nil)
+}
+
+func (em *userDefinedNetworkExpectationMachine) expectedLogicalSwitchesAndPortsWithLspEnabledAndOptions(
+	localNode string, expectedPodLspEnabled map[string]*bool, expectedPodLspOptions map[string]map[string]string,
+) []libovsdbtest.TestData {
+	em.expectedPodLspOptions = expectedPodLspOptions
+	defer func() { em.expectedPodLspOptions = nil }()
+	return em.expectedLogicalSwitchesAndPortsWithLspEnabled(localNode, expectedPodLspEnabled)
 }
 
 func (em *userDefinedNetworkExpectationMachine) expectedLogicalSwitchesAndPortsWithLspEnabled(localNode string, expectedPodLspEnabled map[string]*bool) []libovsdbtest.TestData {
@@ -158,6 +169,13 @@ func (em *userDefinedNetworkExpectationMachine) expectedLogicalSwitchesAndPortsW
 					lsp.Enabled = expectedPodLspEnabled[pod.podName]
 					if lsp.Enabled != nil && !*lsp.Enabled {
 						lsp.Addresses = nil
+					}
+				}
+				if em.expectedPodLspOptions != nil {
+					if opts, ok := em.expectedPodLspOptions[pod.podName]; ok {
+						for k, v := range opts {
+							lsp.Options[k] = v
+						}
 					}
 				}
 
@@ -486,6 +504,9 @@ func newMultiHomedKubevirtPod(vmName string, liveMigrationInfo liveMigrationPodI
 	pod.Status.Phase = liveMigrationInfo.podPhase
 	for key, val := range liveMigrationInfo.annotation {
 		pod.Annotations[key] = val
+	}
+	for key, val := range liveMigrationInfo.labels {
+		pod.Labels[key] = val
 	}
 	pod.CreationTimestamp = liveMigrationInfo.creationTimestamp
 	return pod

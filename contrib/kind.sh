@@ -559,6 +559,7 @@ set_default_params() {
   fi
 
   OVN_ENABLE_OVNKUBE_IDENTITY=${OVN_ENABLE_OVNKUBE_IDENTITY:-true}
+  OVN_ENABLE_MULTI_CHASSIS_LIVE_MIGRATION=${OVN_ENABLE_MULTI_CHASSIS_LIVE_MIGRATION:-true}
 
   KIND_NUM_INFRA=${KIND_NUM_INFRA:-0}
   KIND_INSTALL_PROMETHEUS=${KIND_INSTALL_PROMETHEUS:-false}
@@ -777,6 +778,7 @@ create_ovn_kube_manifests() {
     --enable-multi-external-gateway=true \
     --enable-ovnkube-identity="${OVN_ENABLE_OVNKUBE_IDENTITY}" \
     --enable-persistent-ips=true \
+    --enable-multi-chassis-live-migration="${OVN_ENABLE_MULTI_CHASSIS_LIVE_MIGRATION}" \
     --network-qos-enable="${OVN_NETWORK_QOS_ENABLE}" \
     --mtu="${OVN_MTU}" \
     --enable-dnsnameresolver="${OVN_ENABLE_DNSNAMERESOLVER}" \

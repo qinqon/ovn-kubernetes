@@ -6,6 +6,7 @@ executed using the following flags at the test suite
 - `--collect-iptables`: Call `iptables -L -n`
 - `--collect-ovsflows`: Call `ovs-ofctl dump-flows` per interface
 - `--collect-tcpdump`: Call `tcpdump -vvv -nne` per interface and expression
+- `--collect-nbdb-monitor`: Call `ovsdb-client monitor` on OVN NB DB Logical_Switch_Port table
 
 # To integratre them with new test first instance the diagnostics package with
 
