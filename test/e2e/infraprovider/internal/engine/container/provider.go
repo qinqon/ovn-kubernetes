@@ -2,7 +2,7 @@ package container
 
 import (
 	"github.com/ovn-kubernetes/ovn-kubernetes/test/e2e/infraprovider/api"
-	"github.com/ovn-kubernetes/ovn-kubernetes/test/e2e/infraprovider/portalloc"
+	"github.com/ovn-kubernetes/ovn-kubernetes/test/e2e/infraprovider/internal/portalloc"
 )
 
 // Provider provides a base implementation of api.Provider with common infrastructure functionality.

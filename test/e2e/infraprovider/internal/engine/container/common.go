@@ -12,7 +12,6 @@ import (
 
 	"github.com/ovn-kubernetes/ovn-kubernetes/test/e2e/images"
 	"github.com/ovn-kubernetes/ovn-kubernetes/test/e2e/infraprovider/api"
-	"github.com/ovn-kubernetes/ovn-kubernetes/test/e2e/infraprovider/command"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/kubernetes/test/e2e/framework"
 	utilnet "k8s.io/utils/net"
@@ -27,7 +26,7 @@ const (
 // It can be embedded by infrastructure providers to inherit common container operations.
 type ContainerOps struct {
 	// CmdRunner executes container engine commands and returns their output.
-	CmdRunner command.Runner
+	CmdRunner Runner
 }
 
 // CreateNetwork creates a network using the provided command runner
