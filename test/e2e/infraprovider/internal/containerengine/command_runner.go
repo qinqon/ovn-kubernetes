@@ -1,4 +1,4 @@
-package infraprovider
+package containerengine
 
 // CommandRunner executes docker/podman commands
 type CommandRunner interface {

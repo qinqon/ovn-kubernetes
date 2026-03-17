@@ -12,6 +12,8 @@ import (
 type Provider interface {
 	// Name returns the name of the provider, example 'kind'.
 	Name() string
+	// ContainerRuntime returns the container runtime engine name (e.g. "docker", "podman").
+	ContainerRuntime() string
 	// NewTestContext providers a per test sandbox. Dependent infra test constructs are created within each test and automatically cleaned
 	// after each test.
 	NewTestContext() Context

@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/ovn-org/ovn-kubernetes/test/e2e/images"
-	"github.com/ovn-org/ovn-kubernetes/test/e2e/infraprovider"
 	"github.com/ovn-org/ovn-kubernetes/test/e2e/infraprovider/api"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/kubernetes/test/e2e/framework"
@@ -31,7 +30,7 @@ const (
 
 type ContainerOps struct {
 	Engine    ContainerEngine
-	CmdRunner infraprovider.CommandRunner
+	CmdRunner CommandRunner
 }
 
 // AddNetwork creates a network using the provided command runner

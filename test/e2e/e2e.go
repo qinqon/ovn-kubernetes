@@ -19,7 +19,6 @@ import (
 
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
-	"github.com/ovn-org/ovn-kubernetes/test/e2e/containerengine"
 	"github.com/ovn-org/ovn-kubernetes/test/e2e/deploymentconfig"
 	"github.com/ovn-org/ovn-kubernetes/test/e2e/images"
 	"github.com/ovn-org/ovn-kubernetes/test/e2e/infraprovider"
@@ -372,7 +371,7 @@ func isolateKinDIPv6Networks(networkA, networkB string) error {
 		// nothing to do
 		return nil
 	}
-	if containerengine.Get() != containerengine.Docker {
+	if infraprovider.Get().ContainerRuntime() != "docker" {
 		panic("unsupported container runtime")
 	}
 	var bridgeInfNames []string

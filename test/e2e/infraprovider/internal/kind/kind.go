@@ -8,13 +8,12 @@ import (
 	"sync"
 
 	"github.com/onsi/ginkgo/v2"
-	"github.com/ovn-org/ovn-kubernetes/test/e2e/containerengine"
 	"github.com/ovn-org/ovn-kubernetes/test/e2e/deploymentconfig"
 	"github.com/ovn-org/ovn-kubernetes/test/e2e/images"
-	"github.com/ovn-org/ovn-kubernetes/test/e2e/infraprovider"
 	"github.com/ovn-org/ovn-kubernetes/test/e2e/infraprovider/api"
-	"github.com/ovn-org/ovn-kubernetes/test/e2e/infraprovider/base"
-	"github.com/ovn-org/ovn-kubernetes/test/e2e/infraprovider/portalloc"
+	"github.com/ovn-org/ovn-kubernetes/test/e2e/infraprovider/internal/base"
+	"github.com/ovn-org/ovn-kubernetes/test/e2e/infraprovider/internal/containerengine"
+	"github.com/ovn-org/ovn-kubernetes/test/e2e/infraprovider/internal/portalloc"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -41,7 +40,7 @@ func IsProvider() bool {
 
 type kind struct {
 	base.Provider
-	infraprovider.CommandRunner
+	containerengine.CommandRunner
 	engine string
 }
 

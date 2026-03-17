@@ -4,8 +4,8 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/ovn-org/ovn-kubernetes/test/e2e/containerengine"
 	"github.com/ovn-org/ovn-kubernetes/test/e2e/infraprovider/api"
+	"github.com/ovn-org/ovn-kubernetes/test/e2e/infraprovider/internal/containerengine"
 	"k8s.io/kubernetes/test/e2e/framework"
 )
 

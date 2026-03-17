@@ -1,9 +1,9 @@
 package base
 
 import (
-	"github.com/ovn-org/ovn-kubernetes/test/e2e/containerengine"
 	"github.com/ovn-org/ovn-kubernetes/test/e2e/infraprovider/api"
-	"github.com/ovn-org/ovn-kubernetes/test/e2e/infraprovider/portalloc"
+	"github.com/ovn-org/ovn-kubernetes/test/e2e/infraprovider/internal/containerengine"
+	"github.com/ovn-org/ovn-kubernetes/test/e2e/infraprovider/internal/portalloc"
 )
 
 type Provider struct {
@@ -38,4 +38,8 @@ func (p *Provider) GetExternalContainerPort() uint16 {
 
 func (p *Provider) GetK8HostPort() uint16 {
 	return p.HostPort.Allocate()
+}
+
+func (p *Provider) ContainerRuntime() string {
+	return p.Engine.String()
 }
