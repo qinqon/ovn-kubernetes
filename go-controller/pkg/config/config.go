@@ -545,6 +545,11 @@ type OVNKubernetesFeatureConfig struct {
 	// UDNDeletionGracePeriod specified in number of seconds to wait before garbage collecting a UDN. Applies
 	// only when Dynamic UDN Allocation is enabled.
 	UDNDeletionGracePeriod time.Duration `gcfg:"udn-deletion-grace-period"`
+	// EnableMultichassisLiveMigration uses OVN multichassis port bindings
+	// (requested-chassis with multiple chassis + activation-strategy=rarp) for
+	// seamless KubeVirt live migration on layer2 and localnet user defined
+	// networks with interconnect.
+	EnableMultichassisLiveMigration bool `gcfg:"enable-multichassis-live-migration"`
 }
 
 // GatewayMode holds the node gateway mode
@@ -1329,6 +1334,12 @@ var OVNK8sFeatureFlags = []cli.Flag{
 		Usage:       "Use the persistent ips feature for virtualization with ovn-kubernetes.",
 		Destination: &cliConfig.OVNKubernetesFeature.EnablePersistentIPs,
 		Value:       OVNKubernetesFeature.EnablePersistentIPs,
+	},
+	&cli.BoolFlag{
+		Name:        "enable-multichassis-live-migration",
+		Usage:       "Use OVN multichassis port bindings for seamless KubeVirt live migration on layer2 and localnet user defined networks.",
+		Destination: &cliConfig.OVNKubernetesFeature.EnableMultichassisLiveMigration,
+		Value:       OVNKubernetesFeature.EnableMultichassisLiveMigration,
 	},
 	&cli.BoolFlag{
 		Name:        "enable-dns-name-resolver",
