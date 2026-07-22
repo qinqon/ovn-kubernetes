@@ -11,6 +11,7 @@ import (
 
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/clustermanager/node"
 	ovncnitypes "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/cni/types"
+	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/config"
 	nodecontroller "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/controllers/node"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/factory"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/networkmanager"
@@ -90,8 +91,10 @@ func (sncm *userDefinedNetworkClusterManager) isTopologyManaged(nInfo util.NetIn
 		// pod IPs and tunnel IDs are allocated by cluster-manager
 		return true
 	case ovntypes.LocalnetTopology:
-		// pod IPs are allocated by cluster-manager if there is IPAM
-		return len(nInfo.Subnets()) > 0
+		// pod IPs are allocated by cluster-manager if there is IPAM. With
+		// multichassis live migration, cluster manager also allocates cluster
+		// consistent tunnel IDs (and the pod annotation), even without IPAM.
+		return len(nInfo.Subnets()) > 0 || config.OVNKubernetesFeature.EnableMultichassisLiveMigration
 	}
 	return false
 }

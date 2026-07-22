@@ -6,6 +6,7 @@ package ovn
 import (
 	"fmt"
 	"net"
+	"strconv"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
@@ -220,6 +221,17 @@ func (oc *BaseLayer2UserDefinedNetworkController) initializeLogicalSwitch(switch
 		}
 		lsps = append(lsps, macvrfport)
 		acls = getDenyARPAndNSOnMACVRF(oc.controllerName, macvrfportName, nodeLRPMAC, gwIfAddrv4, gwIfAddrv6)
+	case oc.TopologyType() == types.LocalnetTopology &&
+		config.OVNKubernetesFeature.EnableMultichassisLiveMigration &&
+		oc.GetNetworkID() > 0:
+		// With multichassis live migration, traffic between the migration
+		// source and target chassis is tunneled during the migration window
+		// even on localnet topologies. Give every zone's copy of the localnet
+		// switch the same datapath tunnel key so tunneled packets decode
+		// correctly cross zone. The network's slot in the transit switch
+		// preserved tunnel key range is unused for localnet topologies (they
+		// have no transit switch) and is unique cluster wide, so reuse it.
+		logicalSwitch.OtherConfig["requested-tnl-key"] = strconv.Itoa(zoneinterconnect.BaseTransitSwitchTunnelKey + oc.GetNetworkID())
 	}
 
 	if clusterLoadBalancerGroupUUID != "" && switchLoadBalancerGroupUUID != "" {

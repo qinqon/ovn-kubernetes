@@ -1938,7 +1938,15 @@ func DoesNetworkRequireIPAM(netInfo NetInfo) bool {
 }
 
 func DoesNetworkRequireTunnelIDs(netInfo NetInfo) bool {
-	return netInfo.TopologyType() == types.Layer2Topology
+	if netInfo.TopologyType() == types.Layer2Topology {
+		return true
+	}
+	// With multichassis live migration, localnet pods carry tunnel IDs too:
+	// during the migration window traffic between the source and target
+	// chassis is tunneled, which requires cluster-consistent datapath and
+	// port tunnel keys.
+	return config.OVNKubernetesFeature.EnableMultichassisLiveMigration &&
+		netInfo.TopologyType() == types.LocalnetTopology
 }
 
 func AllowsPersistentIPs(netInfo NetInfo) bool {
