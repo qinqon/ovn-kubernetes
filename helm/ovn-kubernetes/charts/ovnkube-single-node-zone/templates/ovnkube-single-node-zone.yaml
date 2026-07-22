@@ -498,6 +498,8 @@ spec:
           value: {{ hasKey .Values.global "enableObservability" | ternary .Values.global.enableObservability false | quote }}
         - name: OVN_NETWORK_QOS_ENABLE
           value: {{ hasKey .Values.global "enableNetworkQos" | ternary .Values.global.enableNetworkQos false | quote }}
+        - name: OVN_ENABLE_MULTICHASSIS_LIVE_MIGRATION
+          value: {{ hasKey .Values.global "enableMultichassisLiveMigration" | ternary .Values.global.enableMultichassisLiveMigration false | quote }}
         readinessProbe:
           exec:
             command: ["/usr/bin/ovn-kube-util", "readiness-probe", "-t", "ovnkube-node"]

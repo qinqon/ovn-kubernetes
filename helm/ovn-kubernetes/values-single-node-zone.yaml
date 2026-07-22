@@ -124,6 +124,8 @@ global:
   # -- Configure to use the IPAMClaims CRD feature with ovn-kubernetes, thus granting persistent IPs across restarts / migration for KubeVirt VMs
   # @default -- true
   enablePersistentIPs: true
+  # -- Use OVN multichassis port bindings for seamless KubeVirt live migration on layer2 and localnet user defined networks
+  enableMultichassisLiveMigration: false
   # -- Configure to use DNSNameResolver feature with ovn-kubernetes
   enableDNSNameResolver: false
   # -- Configure to allow ICMP and ICMPv6 traffic to bypass NetworkPolicy deny rules

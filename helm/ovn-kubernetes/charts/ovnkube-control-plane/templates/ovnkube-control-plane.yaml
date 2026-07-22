@@ -186,6 +186,8 @@ spec:
           value: {{ default "" .Values.global.v6TransitSubnet | quote }}
         - name: OVN_ENABLE_PERSISTENT_IPS
           value: {{ hasKey .Values.global "enablePersistentIPs" | ternary .Values.global.enablePersistentIPs false | quote }}
+        - name: OVN_ENABLE_MULTICHASSIS_LIVE_MIGRATION
+          value: {{ hasKey .Values.global "enableMultichassisLiveMigration" | ternary .Values.global.enableMultichassisLiveMigration false | quote }}
         - name: OVN_ENABLE_DNSNAMERESOLVER
           value: {{ hasKey .Values.global "enableDNSNameResolver" | ternary .Values.global.enableDNSNameResolver false | quote }}
         - name: OVN_ALLOW_ICMP_NETPOL

@@ -265,6 +265,9 @@ ovn_enable_multi_external_gateway=${OVN_ENABLE_MULTI_EXTERNAL_GATEWAY:-false}
 ovn_enable_ovnkube_identity=${OVN_ENABLE_OVNKUBE_IDENTITY:-true}
 #OVN_ENABLE_PERSISTENT_IPS - enable IPAM for virtualization workloads (KubeVirt persistent IPs)
 ovn_enable_persistent_ips=${OVN_ENABLE_PERSISTENT_IPS:-false}
+#OVN_ENABLE_MULTICHASSIS_LIVE_MIGRATION - use OVN multichassis port bindings for seamless
+# KubeVirt live migration on layer2 and localnet user defined networks
+ovn_enable_multichassis_live_migration=${OVN_ENABLE_MULTICHASSIS_LIVE_MIGRATION:-false}
 
 # OVNKUBE_NODE_MODE - is the mode which ovnkube node operates
 ovnkube_node_mode=${OVNKUBE_NODE_MODE:-"full"}
@@ -1116,6 +1119,12 @@ ovnkube-controller() {
   fi
   echo "network_segmentation_enabled_flag=${network_segmentation_enabled_flag}"
 
+  multichassis_live_migration_enabled_flag=
+  if [[ ${ovn_enable_multichassis_live_migration} == "true" ]]; then
+	  multichassis_live_migration_enabled_flag="--enable-multichassis-live-migration"
+  fi
+  echo "multichassis_live_migration_enabled_flag=${multichassis_live_migration_enabled_flag}"
+
   network_connect_enabled_flag=
   if [[ ${ovn_network_connect_enable} == "true" ]]; then
 	  network_connect_enabled_flag="--enable-network-connect"
@@ -1267,6 +1276,7 @@ ovnkube-controller() {
     ${multicast_enabled_flag} \
     ${multi_network_enabled_flag} \
     ${network_segmentation_enabled_flag} \
+    ${multichassis_live_migration_enabled_flag} \
     ${network_connect_enabled_flag} \
     ${pre_conf_udn_addr_enable_flag} \
     ${route_advertisements_enabled_flag} \
@@ -1456,6 +1466,12 @@ ovnkube-controller-with-node() {
 	  network_segmentation_enabled_flag="--enable-multi-network --enable-network-segmentation"
   fi
   echo "network_segmentation_enabled_flag=${network_segmentation_enabled_flag}"
+
+  multichassis_live_migration_enabled_flag=
+  if [[ ${ovn_enable_multichassis_live_migration} == "true" ]]; then
+	  multichassis_live_migration_enabled_flag="--enable-multichassis-live-migration"
+  fi
+  echo "multichassis_live_migration_enabled_flag=${multichassis_live_migration_enabled_flag}"
 
   network_connect_enabled_flag=
   if [[ ${ovn_network_connect_enable} == "true" ]]; then
@@ -1779,6 +1795,7 @@ ovnkube-controller-with-node() {
     ${multicast_enabled_flag} \
     ${multi_network_enabled_flag} \
     ${network_segmentation_enabled_flag} \
+    ${multichassis_live_migration_enabled_flag} \
     ${network_connect_enabled_flag} \
     ${pre_conf_udn_addr_enable_flag} \
     ${route_advertisements_enabled_flag} \
@@ -1956,6 +1973,12 @@ ovn-cluster-manager() {
   fi
   echo "network_segmentation_enabled_flag=${network_segmentation_enabled_flag}"
 
+  multichassis_live_migration_enabled_flag=
+  if [[ ${ovn_enable_multichassis_live_migration} == "true" ]]; then
+	  multichassis_live_migration_enabled_flag="--enable-multichassis-live-migration"
+  fi
+  echo "multichassis_live_migration_enabled_flag=${multichassis_live_migration_enabled_flag}"
+
   network_connect_enabled_flag=
   if [[ ${ovn_network_connect_enable} == "true" ]]; then
 	  network_connect_enabled_flag="--enable-network-connect"
@@ -2085,6 +2108,7 @@ ovn-cluster-manager() {
     ${multicast_enabled_flag} \
     ${multi_network_enabled_flag} \
     ${network_segmentation_enabled_flag} \
+    ${multichassis_live_migration_enabled_flag} \
     ${network_connect_enabled_flag} \
     ${pre_conf_udn_addr_enable_flag} \
     ${route_advertisements_enabled_flag} \
@@ -2483,6 +2507,7 @@ ovn-node() {
         ${multicast_enabled_flag} \
         ${multi_network_enabled_flag} \
         ${network_segmentation_enabled_flag} \
+    ${multichassis_live_migration_enabled_flag} \
         ${network_connect_enabled_flag} \
         ${pre_conf_udn_addr_enable_flag} \
         ${route_advertisements_enabled_flag} \
