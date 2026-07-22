@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -462,7 +463,8 @@ func (bnc *BaseNetworkController) ensurePodAnnotation(pod *corev1.Pod, nadKey st
 }
 
 func (bnc *BaseNetworkController) addLogicalPortToNetwork(pod *corev1.Pod, nadKey string,
-	network *nadapi.NetworkSelectionElement, enable *bool) (ops []ovsdb.Operation,
+	network *nadapi.NetworkSelectionElement, enable *bool,
+	migrationStatus *kubevirt.LiveMigrationStatus) (ops []ovsdb.Operation,
 	lsp *nbdb.LogicalSwitchPort, podAnnotation *util.PodAnnotation, newlyCreatedPort bool, err error) {
 	var ls *nbdb.LogicalSwitch
 
@@ -638,7 +640,49 @@ func (bnc *BaseNetworkController) addLogicalPortToNetwork(pod *corev1.Pod, nadKe
 		if isRemotePort {
 			customFields = append(customFields, libovsdbops.LogicalSwitchPortType)
 		}
+	} else if bnc.TopologyType() == ovntypes.LocalnetTopology &&
+		bnc.multichassisLiveMigrationEnabled(pod) && podAnnotation.TunnelID != 0 {
+		// With multichassis live migration, traffic between the migration
+		// source and target chassis is tunneled during the migration window
+		// even on localnet topologies. Pin the VM port tunnel key so it is
+		// consistent across the source and target zones.
+		lsp.Options[libovsdbops.RequestedTnlKey] = strconv.Itoa(podAnnotation.TunnelID)
 	}
+
+	// With multichassis live migration, while the migration is in progress
+	// both the source and the target pods' LSPs request binding on the source
+	// and target chassis ("src,dst", source first: the primary chassis is the
+	// first in the list) with activation-strategy=rarp, mirroring OVN's
+	// documented live migration flow. On the target chassis the port is fully
+	// wired (so CNI/kubelet readiness succeeds and migration can start) but
+	// traffic to/from it is blocked until the hypervisor announces the
+	// migrated VM with a RARP, at which point OVN flips the port location in
+	// the dataplane with no CMS involvement. On the source LSP the additional
+	// chassis is inert today (a remote chassis is never bound as additional
+	// within this zone) but keeps both LSPs in sync and becomes effective once
+	// OVN supports binding remote additional chassis (cross zone cloning).
+	// Once the target domain is ready (or if migration failed) the default
+	// single requested-chassis composed above takes over, which also clears
+	// the activation state.
+	if migrationStatus != nil && migrationStatus.State == kubevirt.LiveMigrationInProgress &&
+		bnc.multichassisLiveMigrationEnabled(pod) && podAnnotation.TunnelID != 0 &&
+		!config.Kubernetes.DisableRequestedChassis {
+		isTarget := pod.Name == migrationStatus.TargetPod.Name && bnc.isPodScheduledinLocalZone(pod)
+		isSource := pod.Name == migrationStatus.SourcePod.Name
+		if isTarget || isSource {
+			sourceChassisID, err := bnc.nodeChassisID(migrationStatus.SourcePod.Spec.NodeName)
+			if err != nil {
+				return nil, nil, nil, false, err
+			}
+			targetChassisID, err := bnc.nodeChassisID(migrationStatus.TargetPod.Spec.NodeName)
+			if err != nil {
+				return nil, nil, nil, false, err
+			}
+			lsp.Options[libovsdbops.RequestedChassis] = sourceChassisID + "," + targetChassisID
+			lsp.Options[libovsdbops.ActivationStrategy] = libovsdbops.ActivationStrategyRARP
+		}
+	}
+
 	if len(lsp.Options) != 0 {
 		customFields = append(customFields, libovsdbops.LogicalSwitchPortOptions)
 	}
@@ -649,6 +693,22 @@ func (bnc *BaseNetworkController) addLogicalPortToNetwork(pod *corev1.Pod, nadKe
 	}
 
 	return ops, lsp, podAnnotation, annotationUpdated && !lspExist, nil
+}
+
+// nodeChassisID returns the chassis ID annotated on the given node.
+func (bnc *BaseNetworkController) nodeChassisID(nodeName string) (string, error) {
+	node, err := bnc.watchFactory.GetNode(nodeName)
+	if err != nil {
+		return "", err
+	}
+	chassisID, err := util.ParseNodeChassisIDAnnotation(node)
+	if err != nil {
+		if util.IsAnnotationNotSetError(err) {
+			return "", ovntypes.NewSuppressedError(err)
+		}
+		return "", err
+	}
+	return chassisID, nil
 }
 
 func (bnc *BaseNetworkController) updatePodAnnotationWithRetry(origPod *corev1.Pod, podInfo *util.PodAnnotation, nadKey string) error {
@@ -1077,7 +1137,12 @@ func (bnc *BaseNetworkController) allocatesPodAnnotation() bool {
 		return false
 	case ovntypes.LocalnetTopology:
 		// on localnet topologies with IPAM, cluster manager allocates IPs and
-		// sets the PodAnnotation
+		// sets the PodAnnotation. With multichassis live migration, cluster
+		// manager also allocates cluster consistent tunnel IDs so it owns the
+		// PodAnnotation even without IPAM.
+		if config.OVNKubernetesFeature.EnableMultichassisLiveMigration {
+			return false
+		}
 		return !bnc.doesNetworkRequireIPAM()
 	}
 	return true

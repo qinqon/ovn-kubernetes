@@ -971,6 +971,23 @@ func (bnc *BaseNetworkController) isLayer2WithInterconnectTransport() bool {
 	return bnc.hasInterconnectTransport() && bnc.TopologyType() == types.Layer2Topology
 }
 
+// multichassisLiveMigrationEnabled returns whether the OVN multichassis port
+// binding live migration lifecycle applies to the given pod on this network:
+// the feature is enabled and the pod is a live migratable VM pod on a layer2
+// network with interconnect transport or on a localnet network. With
+// multichassis bindings the migration source and target pods keep separate
+// logical switch ports (one per zone) sharing the same tunnel key, and OVN
+// natively handles the traffic switchover via activation-strategy=rarp.
+func (bnc *BaseNetworkController) multichassisLiveMigrationEnabled(pod *corev1.Pod) bool {
+	if !config.OVNKubernetesFeature.EnableMultichassisLiveMigration {
+		return false
+	}
+	if !kubevirt.IsPodAllowedForMigration(pod, bnc.GetNetInfo()) {
+		return false
+	}
+	return bnc.isLayer2WithInterconnectTransport() || bnc.TopologyType() == types.LocalnetTopology
+}
+
 // HandleNetworkRefChange enqueues node reconciliation when a NAD reference becomes active/inactive.
 func (bnc *BaseNetworkController) HandleNetworkRefChange(nodeName string, _ bool) {
 	bnc.nodeReconciler.ReconcileNetwork(nodeName, bnc.GetNetworkName())

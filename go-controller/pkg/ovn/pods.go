@@ -272,7 +272,7 @@ func (oc *DefaultNetworkController) addLogicalPort(pod *corev1.Pod) (err error) 
 	}()
 
 	nadKey := types.DefaultNetworkName
-	ops, lsp, podAnnotation, newlyCreatedPort, err = oc.addLogicalPortToNetwork(pod, nadKey, network, nil)
+	ops, lsp, podAnnotation, newlyCreatedPort, err = oc.addLogicalPortToNetwork(pod, nadKey, network, nil, nil)
 	if err != nil {
 		return err
 	}

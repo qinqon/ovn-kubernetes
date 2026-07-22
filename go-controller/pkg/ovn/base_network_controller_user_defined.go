@@ -321,7 +321,64 @@ func (bsnc *BaseUserDefinedNetworkController) addLogicalPortToNetworkForNAD(pod 
 	var lspEnabled *bool
 	// actions on the pods' LSP are only triggerred from the target pod
 	shouldHandleLiveMigration := kubevirtLiveMigrationStatus != nil && pod.Name == kubevirtLiveMigrationStatus.TargetPod.Name
-	if shouldHandleLiveMigration {
+	// With multichassis live migration all the LSPs of a VM's pods share the
+	// VM tunnel key, so at most one of them can exist per zone at any time,
+	// and OVN's activation-strategy gates the traffic instead of the
+	// enabled/addresses dance.
+	vmMultichassis := false
+	if bsnc.multichassisLiveMigrationEnabled(pod) {
+		podAnnotation, annErr := util.UnmarshalPodAnnotation(pod.Annotations, nadKey)
+		switch {
+		case annErr != nil && kubevirtLiveMigrationStatus != nil:
+			// the annotation is allocated by cluster manager and is required
+			// to wire the pod anyway, retry later so the multichassis
+			// decision is stable during the migration
+			return fmt.Errorf("failed to get pod annotation of pod %s/%s for NAD key %s during live migration: %w",
+				pod.Namespace, pod.Name, nadKey, annErr)
+		case annErr == nil:
+			vmMultichassis = podAnnotation.TunnelID != 0
+		}
+	}
+	switch {
+	case vmMultichassis && kubevirtLiveMigrationStatus != nil:
+		// Suppress processing of the pod whose LSP is not the authoritative
+		// binding for the VM tunnel key in this zone at the current migration
+		// state; the authoritative pod's processing replaces the sibling LSP
+		// in the same transaction.
+		isTarget := pod.Name == kubevirtLiveMigrationStatus.TargetPod.Name
+		switch kubevirtLiveMigrationStatus.State {
+		case kubevirt.LiveMigrationInProgress:
+			targetZone := bsnc.isPodScheduledinLocalZone(kubevirtLiveMigrationStatus.TargetPod)
+			if isTarget && !targetZone {
+				// While migration is in progress only the target zone wires
+				// the target pod's LSP. This zone keeps the source pod's LSP
+				// as the only binding for the VM tunnel key, but mirrors the
+				// multichassis chassis list on it ("src,dst" + rarp) so both
+				// LSPs stay in sync through the migration.
+				return bsnc.ensurePodForUserDefinedNetwork(kubevirtLiveMigrationStatus.SourcePod, true)
+			}
+			if !isTarget && targetZone {
+				// the target pod's LSP is the authoritative binding here
+				return nil
+			}
+		case kubevirt.LiveMigrationTargetDomainReady:
+			if !isTarget {
+				// the target pod's LSP is the authoritative binding everywhere
+				return nil
+			}
+		case kubevirt.LiveMigrationFailed:
+			if isTarget {
+				// the target pod is completed; the source pod's LSP is
+				// restored by the pod removal flow
+				return nil
+			}
+		}
+		// wire the LSP fully; explicitly enable it in case a previous
+		// non-multichassis iteration left it disabled
+		lspEnabled = ptr.To(true)
+	case vmMultichassis:
+		lspEnabled = ptr.To(true)
+	case shouldHandleLiveMigration:
 		// LSP should be altered inside addLogicalPortToNetwork() before ops are generated because one cannot append
 		// multiple ops regarding the same object in the same transact, so passing enabled parameter.
 		lspEnabled = ptr.To(kubevirtLiveMigrationStatus.IsTargetDomainReady())
@@ -334,7 +391,7 @@ func (bsnc *BaseUserDefinedNetworkController) addLogicalPortToNetworkForNAD(pod 
 	requiresLogicalPort := isLocalPod || bsnc.isLayer2WithInterconnectTransport()
 
 	if requiresLogicalPort {
-		ops, lsp, podAnnotation, newlyCreated, err = bsnc.addLogicalPortToNetwork(pod, nadKey, network, lspEnabled)
+		ops, lsp, podAnnotation, newlyCreated, err = bsnc.addLogicalPortToNetwork(pod, nadKey, network, lspEnabled, kubevirtLiveMigrationStatus)
 		if err != nil {
 			return err
 		}
@@ -358,7 +415,19 @@ func (bsnc *BaseUserDefinedNetworkController) addLogicalPortToNetworkForNAD(pod 
 		bsnc.logicalPortCache.remove(pod, nadKey)
 	}
 
-	if shouldHandleLiveMigration && kubevirtLiveMigrationStatus.IsTargetDomainReady() {
+	if vmMultichassis {
+		// LSPs of the same VM's pods share the VM tunnel key, so at most one
+		// of them can exist per zone: delete any sibling VM pod's LSP in the
+		// same transaction that creates/updates this pod's LSP. This flips
+		// zones from the source to the target pod's LSP on migration (and
+		// back on failure), and prevents transient duplicated tunnel keys on
+		// VM restarts/crash loops, where northd would assign a random key
+		// and never restore the requested one. The delete is idempotent.
+		ops, err = bsnc.deleteSiblingVMPodLSPOps(pod, nadKey, ops)
+		if err != nil {
+			return fmt.Errorf("failed to create sibling VM pod LSP delete ops: %w", err)
+		}
+	} else if shouldHandleLiveMigration && kubevirtLiveMigrationStatus.IsTargetDomainReady() {
 		// We have a source pod LSP at this zone if the source pod and:
 		// - layer2 IC There is one at all the zones since we have the remote LSP to implement east/west
 		// - localnet only if this is the zone where the source pod is running
@@ -467,7 +536,12 @@ func (bsnc *BaseUserDefinedNetworkController) removePodForUserDefinedNetwork(pod
 			alreadyProcessed = true
 		}
 
-		if kubevirt.IsPodAllowedForMigration(pod, bsnc.GetNetInfo()) {
+		if kubevirt.IsPodAllowedForMigration(pod, bsnc.GetNetInfo()) &&
+			!(bsnc.multichassisLiveMigrationEnabled(pod) && podAnnotation.TunnelID != 0) {
+			// legacy (non multichassis) live migration: re-enable the source
+			// LSP if the migration failed. With multichassis the surviving VM
+			// pod is re-wired after the loop instead, once this pod's LSP
+			// (sharing the VM tunnel key) is deleted.
 			if err = bsnc.enableSourceLSPFailedLiveMigration(pod, nadKey, podAnnotation.MAC, podAnnotation.IPs); err != nil {
 				return err
 			}
@@ -501,6 +575,28 @@ func (bsnc *BaseUserDefinedNetworkController) removePodForUserDefinedNetwork(pod
 
 		bsnc.forgetPodReleasedBeforeStartup(string(pod.UID), nadKey)
 
+	}
+
+	// With multichassis live migration, wire the surviving VM pod (the
+	// migration target on success, the source on failure) after this pod's
+	// LSP is gone. This makes the VM port switchover independent of pod event
+	// ordering: if this zone processes the source pod deletion before (or
+	// instead of) the target pod's migration-target-ready update, the target
+	// pod's LSP is created here; when the events came in the expected order
+	// this is an idempotent no-op.
+	if bsnc.multichassisLiveMigrationEnabled(pod) {
+		siblingPod, err := kubevirt.FindLiveSiblingVMPod(bsnc.watchFactory.PodCoreInformer().Lister(), pod)
+		if err != nil {
+			return fmt.Errorf("failed looking for a live sibling VM pod of %s: %w", podDesc, err)
+		}
+		if siblingPod != nil {
+			klog.V(5).Infof("Ensuring LSP for live sibling VM pod %s/%s after removal of %s on network %s",
+				siblingPod.Namespace, siblingPod.Name, podDesc, bsnc.GetNetworkName())
+			if err := bsnc.ensurePodForUserDefinedNetwork(siblingPod, true); err != nil {
+				return fmt.Errorf("failed ensuring LSP for live sibling VM pod %s/%s after removal of %s: %w",
+					siblingPod.Namespace, siblingPod.Name, podDesc, err)
+			}
+		}
 	}
 	return nil
 }
@@ -1037,6 +1133,47 @@ func (bsnc *BaseUserDefinedNetworkController) disableLiveMigrationSourceLSPOps(
 
 	ops, _, err := bsnc.setPodLogicalSwitchPortAddressesAndEnabledField(kubevirtLiveMigrationStatus.SourcePod, nadKey, "", nil, false, ops)
 	return ops, err
+}
+
+// deleteSiblingVMPodLSPOps appends ops deleting the LSPs of any other pod of
+// the same VM in this zone. With multichassis live migration all the VM
+// pods' LSPs share the VM tunnel key, so only one of them can exist per zone
+// at any time; the sibling LSPs must be removed in the same transaction that
+// wires this pod's LSP, both to flip zones between the source and target
+// pods' LSPs during live migration and to avoid transient duplicated
+// requested tunnel keys on VM restarts or crash loops (northd assigns a
+// random key on conflict and does not restore the requested one afterwards).
+// The operation is idempotent: it no-ops for sibling LSPs that do not exist.
+func (bsnc *BaseUserDefinedNetworkController) deleteSiblingVMPodLSPOps(pod *corev1.Pod, nadKey string, ops []ovsdb.Operation) ([]ovsdb.Operation, error) {
+	vmDescription, err := kubevirt.NewVMDescriptionFromPod(pod)
+	if err != nil || vmDescription == nil {
+		return ops, err
+	}
+	vmPods, err := vmDescription.OwnedPods(bsnc.watchFactory.PodCoreInformer().Lister())
+	if err != nil {
+		return nil, fmt.Errorf("failed finding related pods for pod %s/%s when deleting sibling LSPs: %w",
+			pod.Namespace, pod.Name, err)
+	}
+	for _, vmPod := range vmPods {
+		if vmPod.UID == pod.UID {
+			continue
+		}
+		if !bsnc.hasPodLogicalPort(vmPod) {
+			continue
+		}
+		portName := bsnc.GetLogicalPortName(vmPod, nadKey)
+		switchName, err := bsnc.getExpectedSwitchName(vmPod)
+		if err != nil {
+			return nil, err
+		}
+		delOps, err := bsnc.delLSPOps(portName, switchName, "")
+		if err != nil {
+			return nil, err
+		}
+		bsnc.logicalPortCache.remove(vmPod, nadKey)
+		ops = append(ops, delOps...)
+	}
+	return ops, nil
 }
 
 func (bsnc *BaseUserDefinedNetworkController) enableSourceLSPFailedLiveMigration(pod *corev1.Pod, nadKey string, mac string, ips []string) error {
