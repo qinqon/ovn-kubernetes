@@ -370,8 +370,10 @@ func (ncc *networkClusterController) hasPodAllocation() bool {
 		// We need to allocate the PodAnnotation
 		return true
 	case types.LocalnetTopology:
-		// We need to allocate the PodAnnotation if there is IPAM
-		return len(ncc.Subnets()) > 0
+		// We need to allocate the PodAnnotation if there is IPAM. With
+		// multichassis live migration we also need to allocate cluster
+		// consistent tunnel IDs, even without IPAM.
+		return len(ncc.Subnets()) > 0 || config.OVNKubernetesFeature.EnableMultichassisLiveMigration
 	}
 	return false
 }
@@ -502,6 +504,7 @@ func (ncc *networkClusterController) init() error {
 			ncc.recorder,
 			ncc.tunnelIDAllocator,
 			ncc.watchFactory.NodeCoreInformer().Lister(),
+			ncc.watchFactory.PodCoreInformer().Lister(),
 		)
 		if err := ncc.podAllocator.Init(); err != nil {
 			return fmt.Errorf("failed to initialize pod ip allocator: %w", err)

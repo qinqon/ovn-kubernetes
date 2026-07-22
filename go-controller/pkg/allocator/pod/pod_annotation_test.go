@@ -1404,6 +1404,7 @@ func Test_allocatePodAnnotationWithRollback(t *testing.T) {
 			}
 
 			pod, podAnnotation, rollback, err := allocatePodAnnotationWithRollback(
+				nil,
 				tt.args.ipAllocator,
 				tt.args.idAllocator,
 				tt.netInfo,

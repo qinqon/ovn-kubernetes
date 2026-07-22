@@ -23,6 +23,7 @@ import (
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/config"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/generator/udn"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/kube"
+	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/kubevirt"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/persistentips"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/util"
@@ -125,6 +126,7 @@ func allocatePodAnnotation(
 	allocateToPodWithRollback := func(currentPod *corev1.Pod) (*corev1.Pod, func(), error) {
 		var rollback func()
 		updatedPod, podAnnotation, rollback, err = allocatePodAnnotationWithRollback(
+			podLister,
 			ipAllocator,
 			idAllocator,
 			netInfo,
@@ -214,6 +216,7 @@ func allocatePodAnnotationWithTunnelID(
 	allocateToPodWithRollback := func(currentPod *corev1.Pod) (*corev1.Pod, func(), error) {
 		var rollback func()
 		updatedPod, podAnnotation, rollback, err = allocatePodAnnotationWithRollback(
+			podLister,
 			ipAllocator,
 			idAllocator,
 			netInfo,
@@ -335,6 +338,7 @@ func validateIPFamilyMatchesNetwork(netInfo util.NetInfo, ipRequests []string) e
 // implementations. Use an inlined implementation if you want to extract
 // information from it as a side-effect.
 func allocatePodAnnotationWithRollback(
+	podLister listers.PodLister,
 	ipAllocator subnet.NamedAllocator,
 	idAllocator id.NamedAllocator,
 	netInfo util.NetInfo,
@@ -413,7 +417,26 @@ func allocatePodAnnotationWithRollback(
 		Role:     networkRole,
 	}
 
-	hasIDAllocation := util.DoesNetworkRequireTunnelIDs(netInfo)
+	// Note: only the caller owning ID allocation (cluster manager) passes an
+	// idAllocator; readers of the annotation pass nil and must not allocate.
+	hasIDAllocation := util.DoesNetworkRequireTunnelIDs(netInfo) && idAllocator != nil
+
+	// With multichassis live migration, a migration target pod must share the
+	// tunnel key of the source pod so both logical switch ports refer to the
+	// same datapath port across zones. Seed the tentative tunnel ID from a
+	// live sibling VM pod before deciding whether a new ID is needed.
+	if config.OVNKubernetesFeature.EnableMultichassisLiveMigration &&
+		hasIDAllocation && tentative.TunnelID == 0 && podLister != nil {
+		tentative.TunnelID, err = kubevirt.FindLiveVMPodTunnelID(podLister, pod, nadKey)
+		if err != nil {
+			err = fmt.Errorf("failed looking up VM tunnel id for %s: %w", podDesc, err)
+			return
+		}
+		if tentative.TunnelID != 0 {
+			klog.V(5).Infof("Reusing tunnel id %d from a sibling VM pod for %s", tentative.TunnelID, podDesc)
+		}
+	}
+
 	needsID := tentative.TunnelID == 0 && hasIDAllocation
 
 	if hasIDAllocation {

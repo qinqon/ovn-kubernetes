@@ -154,6 +154,64 @@ func EnsurePodAnnotationForVM(watchFactory *factory.WatchFactory, kube *kube.Kub
 	return podAnnotation, nil
 }
 
+// FindLiveVMPodTunnelID returns the tunnel ID annotated on a non-completed
+// sibling pod of the same VM for the given nadKey. It returns
+// types.NoTunnelID when the pod does not belong to a VM or no live sibling
+// pod carries a tunnel ID for the network. It is used during live migration
+// so the migration target pod inherits the tunnel key of the source pod,
+// making both logical switch ports aliases of the same datapath port across
+// zones.
+func FindLiveVMPodTunnelID(podLister listersv1.PodLister, pod *corev1.Pod, nadKey string) (int, error) {
+	vmDescription, err := NewVMDescriptionFromPod(pod)
+	if err != nil || vmDescription == nil {
+		return ovntypes.NoTunnelID, err
+	}
+	vmPods, err := vmDescription.OwnedPods(podLister)
+	if err != nil {
+		return ovntypes.NoTunnelID, fmt.Errorf("failed finding related pods for pod %s/%s when looking for tunnel id: %w",
+			pod.Namespace, pod.Name, err)
+	}
+	for _, vmPod := range vmPods {
+		if vmPod.UID == pod.UID || util.PodCompleted(vmPod) {
+			continue
+		}
+		podAnnotation, err := util.UnmarshalPodAnnotation(vmPod.Annotations, nadKey)
+		if err != nil {
+			continue
+		}
+		if podAnnotation.TunnelID != ovntypes.NoTunnelID {
+			return podAnnotation.TunnelID, nil
+		}
+	}
+	return ovntypes.NoTunnelID, nil
+}
+
+// FindLiveSiblingVMPod returns a non-completed sibling pod of the same VM,
+// preferring the newest one (the live migration target when a migration is in
+// flight). Returns nil when the pod does not belong to a VM or no live
+// sibling exists.
+func FindLiveSiblingVMPod(podLister listersv1.PodLister, pod *corev1.Pod) (*corev1.Pod, error) {
+	vmDescription, err := NewVMDescriptionFromPod(pod)
+	if err != nil || vmDescription == nil {
+		return nil, err
+	}
+	vmPods, err := vmDescription.OwnedPods(podLister)
+	if err != nil {
+		return nil, fmt.Errorf("failed finding related pods for pod %s/%s when looking for a live sibling: %w",
+			pod.Namespace, pod.Name, err)
+	}
+	var newest *corev1.Pod
+	for _, vmPod := range vmPods {
+		if vmPod.UID == pod.UID || util.PodCompleted(vmPod) {
+			continue
+		}
+		if newest == nil || newest.CreationTimestamp.Before(&vmPod.CreationTimestamp) {
+			newest = vmPod
+		}
+	}
+	return newest, nil
+}
+
 // AllVMPodsAreCompleted returns true if all VM pods are completed.
 func AllVMPodsAreCompleted(podLister listersv1.PodLister, pod *corev1.Pod) (bool, error) {
 	if !util.PodCompleted(pod) {

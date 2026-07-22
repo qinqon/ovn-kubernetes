@@ -25,6 +25,7 @@ import (
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/allocator/mac"
 	podallocator "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/allocator/pod"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/config"
+	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/kubevirt"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/networkmanager"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/persistentips"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/types"
@@ -59,6 +60,10 @@ type PodAllocator struct {
 	releasedPodsMutex sync.Mutex
 
 	nodeLister corev1listers.NodeLister
+
+	// podLister is used to find sibling pods of the same VM so tunnel IDs can
+	// be shared and retained across KubeVirt live migrations
+	podLister corev1listers.PodLister
 }
 
 // NewPodAllocator builds a new PodAllocator
@@ -71,6 +76,7 @@ func NewPodAllocator(
 	recorder record.EventRecorder,
 	idAllocator id.Allocator,
 	nodeLister corev1listers.NodeLister,
+	podLister corev1listers.PodLister,
 ) *PodAllocator {
 	podAllocator := &PodAllocator{
 		netInfo:                netInfo,
@@ -81,6 +87,7 @@ func NewPodAllocator(
 		recorder:               recorder,
 		idAllocator:            idAllocator,
 		nodeLister:             nodeLister,
+		podLister:              podLister,
 	}
 
 	// this network might not have IPAM, we will just allocate MAC addresses
@@ -324,9 +331,19 @@ func (a *PodAllocator) releasePodOnNAD(pod *corev1.Pod, nadKey string, network *
 	doReleaseIPs := doRelease && hasIPAM && !hasIPAMClaim
 
 	if doReleaseIDs {
-		name := podIdAllocationName(nadKey, uid)
-		a.idAllocator.ReleaseID(name)
-		klog.V(5).Infof("Released ID %d", podAnnotation.TunnelID)
+		retain, err := a.shouldRetainVMTunnelID(pod)
+		if err != nil {
+			return fmt.Errorf("failed checking if tunnel ID of pod %s/%s should be retained: %w",
+				pod.Namespace, pod.Name, err)
+		}
+		if retain {
+			klog.V(5).Infof("Retaining tunnel ID %d for pod %s/%s because it is in use by another VM pod",
+				podAnnotation.TunnelID, pod.Namespace, pod.Name)
+		} else {
+			name := a.podIdAllocationName(nadKey, pod)
+			a.idAllocator.ReleaseID(name)
+			klog.V(5).Infof("Released ID %d", podAnnotation.TunnelID)
+		}
 	}
 
 	if doReleaseIPs {
@@ -367,7 +384,7 @@ func (a *PodAllocator) allocatePodOnNAD(pod *corev1.Pod, nadKey string, network 
 
 	var idAllocator id.NamedAllocator
 	if util.DoesNetworkRequireTunnelIDs(a.netInfo) {
-		name := podIdAllocationName(nadKey, string(pod.UID))
+		name := a.podIdAllocationName(nadKey, pod)
 		idAllocator = a.idAllocator.ForName(name)
 	}
 
@@ -467,6 +484,33 @@ func (a *PodAllocator) recordPodErrorEvent(pod *corev1.Pod, podErr error) {
 	}
 }
 
-func podIdAllocationName(nadKey, uid string) string {
-	return fmt.Sprintf("%s/%s", nadKey, uid)
+// podIdAllocationName composes the ID allocation name for a pod. With
+// multichassis live migration enabled, pods owned by a KubeVirt VM share the
+// allocation name (and thus the tunnel ID) keyed by the VM instead of the pod
+// UID, so migration source and target pods refer to the same datapath port
+// tunnel key.
+func (a *PodAllocator) podIdAllocationName(nadKey string, pod *corev1.Pod) string {
+	if config.OVNKubernetesFeature.EnableMultichassisLiveMigration {
+		vmDescription, err := kubevirt.NewVMDescriptionFromPod(pod)
+		if err == nil && vmDescription != nil {
+			return fmt.Sprintf("%s/%s", nadKey, vmDescription.Key().String())
+		}
+	}
+	return fmt.Sprintf("%s/%s", nadKey, string(pod.UID))
+}
+
+// shouldRetainVMTunnelID returns true when the pod belongs to a KubeVirt VM
+// with other non-completed pods still using the shared, VM-keyed tunnel ID.
+func (a *PodAllocator) shouldRetainVMTunnelID(pod *corev1.Pod) (bool, error) {
+	if !config.OVNKubernetesFeature.EnableMultichassisLiveMigration {
+		return false, nil
+	}
+	if !kubevirt.IsPodOwnedByVirtualMachine(pod) || a.podLister == nil {
+		return false, nil
+	}
+	allVMPodsCompleted, err := kubevirt.AllVMPodsAreCompleted(a.podLister, pod)
+	if err != nil {
+		return false, err
+	}
+	return !allVMPodsCompleted, nil
 }
