@@ -15,6 +15,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/klog/v2"
 	utilnet "k8s.io/utils/net"
 	"k8s.io/utils/ptr"
@@ -33,6 +34,7 @@ import (
 	addressset "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/ovn/address_set"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/ovn/addresssetmanager"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/ovn/controller/udnenabledsvc"
+	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/sbdb"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/types"
 	"github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/util"
 	utilerrors "github.com/ovn-kubernetes/ovn-kubernetes/go-controller/pkg/util/errors"
@@ -488,6 +490,20 @@ func (bsnc *BaseUserDefinedNetworkController) addLogicalPortToNetworkForNAD(pod 
 		bsnc.podRecorder.AddLSP(pod.UID, bsnc.GetNetInfo())
 		if newlyCreated {
 			metrics.RecordPodCreated(pod, bsnc.GetNetInfo())
+		}
+	}
+
+	if vmMultichassis && lsp != nil {
+		// Emulate, from the CMS, ovn-northd binding of remote requested
+		// additional chassis: during live migration every zone's copy of the
+		// VM port binding gets the migration target chassis added to
+		// additional_chassis when that chassis is remote to the zone, making
+		// ovn-controller clone traffic to both the source and target chassis
+		// for the whole migration window (no switchover flip in the critical
+		// path, like a single zone OVN deployment would behave).
+		if err := bsnc.reconcileLiveMigrationRemoteAdditionalChassis(pod, nadKey, kubevirtLiveMigrationStatus); err != nil {
+			return fmt.Errorf("failed reconciling remote additional chassis for pod %s/%s NAD key %s: %w",
+				pod.Namespace, pod.Name, nadKey, err)
 		}
 	}
 
@@ -1133,6 +1149,103 @@ func (bsnc *BaseUserDefinedNetworkController) disableLiveMigrationSourceLSPOps(
 
 	ops, _, err := bsnc.setPodLogicalSwitchPortAddressesAndEnabledField(kubevirtLiveMigrationStatus.SourcePod, nadKey, "", nil, false, ops)
 	return ops, err
+}
+
+// reconcileLiveMigrationRemoteAdditionalChassis mirrors, in this zone's
+// southbound database, what ovn-northd would do if it supported binding
+// remote requested additional chassis (it binds only remote *primary*
+// chassis today): while a live migration is in progress, the port binding of
+// the VM's authoritative LSP in this zone gets the migration target chassis
+// added to Port_Binding.additional_chassis when that chassis is remote to
+// this zone. ovn-controller's cloning logic is chassis-type agnostic, so
+// traffic from this zone is then delivered to both the migration source and
+// target chassis for the whole migration window; the copy towards the target
+// is dropped by the rarp activation strategy until the VM actually resumes
+// there. Outside of an in-progress migration any remote entry is removed.
+// Locally claimed (non remote) entries are owned by ovn-controller and are
+// never touched.
+func (bsnc *BaseUserDefinedNetworkController) reconcileLiveMigrationRemoteAdditionalChassis(
+	pod *corev1.Pod, nadKey string, kubevirtLiveMigrationStatus *kubevirt.LiveMigrationStatus,
+) error {
+	portName := bsnc.GetLogicalPortName(pod, nadKey)
+
+	// the desired set of remote additional chassis for this zone: the
+	// migration target chassis, while migration is in progress and when it is
+	// a remote chassis in this zone (in the target zone the target chassis is
+	// local and its additional_chassis entry is claimed by ovn-controller).
+	// Scoped to layer2 (geneve) topologies: there, without cloning, every
+	// zone keeps forwarding to the migration source until its LSP is flipped,
+	// so cloning removes the flip from the traffic critical path. On localnet
+	// topologies the physical fabric re-learns the VM location from the RARP
+	// at wire speed (bystander zones hold no binding for the VM at all) and
+	// binding an additional chassis would drag the whole migration window
+	// through OVN's localnet multichassis tunnel enforcement for no benefit.
+	desired := map[string]string{}
+	if bsnc.isLayer2WithInterconnectTransport() &&
+		kubevirtLiveMigrationStatus != nil && kubevirtLiveMigrationStatus.State == kubevirt.LiveMigrationInProgress {
+		targetChassisID, err := bsnc.nodeChassisID(kubevirtLiveMigrationStatus.TargetPod.Spec.NodeName)
+		if err != nil {
+			return err
+		}
+		targetChassis, err := libovsdbops.GetChassis(bsnc.sbClient, &sbdb.Chassis{Name: targetChassisID})
+		if err != nil {
+			return fmt.Errorf("failed to find chassis %s in local SB: %w", targetChassisID, err)
+		}
+		if targetChassis.OtherConfig["is-remote"] == "true" {
+			desired[targetChassis.UUID] = targetChassis.Name
+		}
+	}
+
+	pb, err := libovsdbops.GetPortBinding(bsnc.sbClient, &sbdb.PortBinding{LogicalPort: portName})
+	if err != nil {
+		if len(desired) == 0 {
+			// nothing to clean up on a port binding that does not exist
+			return nil
+		}
+		// the port binding is created by ovn-northd from the LSP we just
+		// transacted; retry until it shows up
+		return fmt.Errorf("port binding %s not found yet: %w", portName, err)
+	}
+
+	var toAdd, toRemove []string
+	current := sets.New(pb.AdditionalChassis...)
+	desiredSet := sets.New[string]()
+	for uuid := range desired {
+		desiredSet.Insert(uuid)
+		if !current.Has(uuid) {
+			toAdd = append(toAdd, uuid)
+		}
+	}
+	if remove := current.Difference(desiredSet); remove.Len() > 0 {
+		// only remove entries that are remote chassis in this zone, locally
+		// claimed entries belong to ovn-controller
+		chassisList, err := libovsdbops.ListChassis(bsnc.sbClient)
+		if err != nil {
+			return fmt.Errorf("failed listing chassis: %w", err)
+		}
+		for _, chassis := range chassisList {
+			if remove.Has(chassis.UUID) && chassis.OtherConfig["is-remote"] == "true" {
+				toRemove = append(toRemove, chassis.UUID)
+			}
+		}
+	}
+
+	if len(toAdd) > 0 {
+		if err := libovsdbops.AddAdditionalChassisToPortBinding(bsnc.sbClient, portName, toAdd); err != nil {
+			return fmt.Errorf("failed adding additional chassis %v to port binding %s: %w", toAdd, portName, err)
+		}
+		klog.Infof("Live migration: bound remote additional chassis %v on port binding %s (zone %s)",
+			toAdd, portName, bsnc.zone)
+	}
+	if len(toRemove) > 0 {
+		if err := libovsdbops.RemoveAdditionalChassisFromPortBinding(bsnc.sbClient, portName, toRemove); err != nil {
+			return fmt.Errorf("failed removing additional chassis %v from port binding %s: %w", toRemove, portName, err)
+		}
+		klog.Infof("Live migration: removed remote additional chassis %v from port binding %s (zone %s)",
+			toRemove, portName, bsnc.zone)
+	}
+
+	return nil
 }
 
 // deleteSiblingVMPodLSPOps appends ops deleting the LSPs of any other pod of
