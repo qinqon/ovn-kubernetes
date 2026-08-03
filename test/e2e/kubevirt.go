@@ -225,9 +225,14 @@ func createVirtualMachineWithClient(cli crclient.Client, vm *kubevirtv1.VirtualM
 	}).WithPolling(time.Second).WithTimeout(time.Minute).Should(Succeed())
 }
 
-func waitForVMIReadinessWithClient(cli crclient.Client, vmi *kubevirtv1.VirtualMachineInstance, conditionStatus corev1.ConditionStatus) {
+func waitForVMIReadinessWithClient(
+	cli crclient.Client,
+	vmi *kubevirtv1.VirtualMachineInstance,
+	conditionType kubevirtv1.VirtualMachineInstanceConditionType,
+	conditionStatus corev1.ConditionStatus,
+) {
 	GinkgoHelper()
-	By(fmt.Sprintf("Waiting for readiness=%q at virtual machine %s", conditionStatus, vmi.Name))
+	By(fmt.Sprintf("Waiting for condition type=%q status=%q at virtual machine %s", conditionType, conditionStatus, vmi.Name))
 	Eventually(func() []kubevirtv1.VirtualMachineInstanceCondition {
 		err := cli.Get(context.Background(), crclient.ObjectKeyFromObject(vmi), vmi)
 		Expect(err).To(SatisfyAny(
@@ -237,9 +242,10 @@ func waitForVMIReadinessWithClient(cli crclient.Client, vmi *kubevirtv1.VirtualM
 		return vmi.Status.Conditions
 	}).WithPolling(time.Second).WithTimeout(5 * time.Minute).Should(
 		ContainElement(SatisfyAll(
-			HaveField("Type", kubevirtv1.VirtualMachineInstanceReady),
+			HaveField("Type", conditionType),
 			HaveField("Status", conditionStatus),
-		)))
+		)),
+	)
 }
 
 func createCUDNWithClients(cli crclient.Client, dynClient dynamic.Interface, cudn *udnv1.ClusterUserDefinedNetwork) {
@@ -964,19 +970,22 @@ fi
 			}).WithPolling(time.Second).WithTimeout(time.Minute).Should(Succeed())
 		}
 
-		waitVirtualMachineInstanceReadinessWith = func(vmi *kubevirtv1.VirtualMachineInstance, conditionStatus corev1.ConditionStatus) {
+		waitVirtualMachineInstanceReadinessWith = func(
+			vmi *kubevirtv1.VirtualMachineInstance,
+			conditionType kubevirtv1.VirtualMachineInstanceConditionType,
+			conditionStatus corev1.ConditionStatus,
+		) {
 			GinkgoHelper()
-			waitForVMIReadinessWithClient(crClient, vmi, conditionStatus)
+			waitForVMIReadinessWithClient(crClient, vmi, conditionType, conditionStatus)
 		}
 
 		waitVirtualMachineInstanceReadiness = func(vmi *kubevirtv1.VirtualMachineInstance) {
 			GinkgoHelper()
-			waitVirtualMachineInstanceReadinessWith(vmi, corev1.ConditionTrue)
+			waitVirtualMachineInstanceReadinessWith(vmi, kubevirtv1.VirtualMachineInstanceReady, corev1.ConditionTrue)
 		}
-
 		waitVirtualMachineInstanceFailed = func(vmi *kubevirtv1.VirtualMachineInstance) {
 			GinkgoHelper()
-			waitVirtualMachineInstanceReadinessWith(vmi, corev1.ConditionFalse)
+			waitVirtualMachineInstanceReadinessWith(vmi, kubevirtv1.VirtualMachineInstanceReady, corev1.ConditionFalse)
 		}
 
 		waitVirtualMachineAddresses = func(vmi *kubevirtv1.VirtualMachineInstance) {
@@ -2528,6 +2537,110 @@ chpasswd: { expire: False }
 			Entry("after failed live migration", liveMigrateFailed),
 		)
 	})
+
+	DescribeTable("user-defined network port-security disabled, TCP connections with spoofed MAC should survive successful and failed live migration",
+		func(topology udnv1.NetworkTopology) {
+			const (
+				serverIPV4   = "10.10.10.20"
+				serverCIDRv4 = serverIPV4 + "/24"
+				serverIPV6   = "2001:db8:abcd:1234::20"
+				serverCIDRv6 = serverIPV6 + "/64"
+
+				clientCIDRv4  = "10.10.10.10/24"
+				clientCIDRv6  = "2001:db8:abcd:1234::10/64"
+				clientIface   = "eth0"
+				clientBrIface = "br0"
+				spoofedMAC    = "02:00:00:fa:fb:fc"
+			)
+			serverCIDRs := filterCIDRs(clientSet, serverCIDRv4, serverCIDRv6)
+			clientCIDRs := filterCIDRs(fr.ClientSet, clientCIDRv4, clientCIDRv6)
+			serverAddrs := filterIPs(clientSet, serverIPV4, serverIPV6)
+
+			By("create test namespace")
+			fr.BaseName = "kv-port-security-test"
+			ns, err := fr.CreateNamespace(context.Background(), fr.BaseName, map[string]string{"e2e-framework": fr.BaseName})
+			Expect(err).NotTo(HaveOccurred())
+			fr.Namespace = ns
+			namespace = fr.Namespace.Name
+
+			By("create network resource")
+			cudn, networkName := kubevirt.GenerateCUDN(namespace, "netsted-virt-net", topology, udnv1.NetworkRoleSecondary, nil,
+				kubevirt.WithMACSecurityConfig(udnv1.MACSecurityConfig{Mode: udnv1.MACSecurityDisabled}))
+			createCUDN(cudn)
+
+			if topology == udnv1.NetworkTopologyLocalnet {
+				By("setting up the localnet underlay")
+				Expect(providerCtx.SetupUnderlay(fr, infraapi.Underlay{LogicalNetworkName: networkName})).To(Succeed())
+			}
+
+			By("create server pod")
+			serverPodCfg := podConfiguration{
+				name:        "server",
+				namespace:   namespace,
+				attachments: []nadapi.NetworkSelectionElement{{Name: cudn.Name, IPRequest: serverCIDRs}},
+			}
+			serverPod := generatePodSpec(serverPodCfg)
+			serverPod.Spec.Containers[0].Image = images.Netshoot()
+			serverPod.Spec.Containers[0].Command = []string{"bash", "-ec"}
+			serverPod.Spec.Containers[0].Args = []string{iperfServerScript + "\n sleep infinity"}
+			Expect(crClient.Create(context.Background(), serverPod)).To(Succeed())
+
+			By("create client VM")
+			netSrc := kubevirtv1.NetworkSource{Multus: &kubevirtv1.MultusNetwork{NetworkName: cudn.Name}}
+			// cloud-init is used to configure the guest to have linux-bridge on top the primary NIC with custom MAC address and static IP addresses.
+			// the bridge mac address is configured direcly with
+			userData := fmt.Sprintf(`#cloud-config
+runcmd:
+ - sudo nmcli c mod 'cloud-init %[1]s' bridge.mac-address %[2]s
+ - sudo nmcli c down 'cloud-init %[1]s' && sudo nmcli c up 'cloud-init %[1]s'
+`, clientBrIface, spoofedMAC)
+			networkData, err := yaml.Marshal(kubevirt.UplinkLinuxBridgeNetworkData(clientIface, clientBrIface, spoofedMAC, clientCIDRs))
+			Expect(err).NotTo(HaveOccurred())
+			vm := fedoraWithTestToolingVM(nil, nil, nil, netSrc, userData, string(networkData))
+			createVirtualMachine(vm)
+
+			step := by(vm.Name, "waiting for client readiness")
+			vmi := &kubevirtv1.VirtualMachineInstance{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: vm.Name}}
+			waitVirtualMachineInstanceReadinessWith(vmi, kubevirtv1.VirtualMachineInstanceAgentConnected, corev1.ConditionTrue)
+			Expect(virtClient.LoginToFedora(vmi, "fedora", "fedora")).To(Succeed(), step)
+
+			By("Waiting for server readiness..")
+			Expect(e2epod.WaitForPodNameRunningInNamespace(context.Background(), clientSet, serverPodCfg.name, serverPodCfg.namespace)).To(Succeed())
+
+			DeferCleanup(func() {
+				output, err := virtClient.RunCommand(vmi, "pkill -x iperf3 || true", 5*time.Second)
+				Expect(err).NotTo(HaveOccurred(), output)
+			})
+
+			step = by(vmi.Name, "Check TCP connections")
+			serverIPsByName := map[string][]string{serverPodCfg.name: serverAddrs}
+			Expect(startEastWestIperfTraffic(vmi, serverIPsByName, step)).To(Succeed(), step)
+			checkEastWestIperfTraffic(vmi, serverIPsByName, step)
+
+			by(vmi.Name, "live-migrate client VM")
+			liveMigrateSucceed(vmi)
+
+			Expect(crClient.Get(context.Background(), crclient.ObjectKeyFromObject(vmi), vmi)).To(Succeed())
+			step = by(vmi.Name, "Check TCP connection, after successful migration")
+			Expect(virtClient.LoginToFedora(vmi, "fedora", "fedora")).To(Succeed(), step)
+			checkEastWestIperfTraffic(vmi, serverIPsByName, step)
+
+			by(vmi.Name, "simulate client VM live-migration failure")
+			// delete the VMIM object used for the successful migration, to relax liveMigrateFailed() errors due to multiple VMIM objects existence
+			// TODO: change liveMigrateFailed() to not fail when there are multiple VMIM objects
+			Expect(crClient.DeleteAllOf(context.Background(), &kubevirtv1.VirtualMachineInstanceMigration{}, &crclient.DeleteAllOfOptions{
+				ListOptions: crclient.ListOptions{Namespace: vmi.Namespace},
+			})).To(Succeed())
+			liveMigrateFailed(vmi)
+
+			Expect(crClient.Get(context.Background(), crclient.ObjectKeyFromObject(vmi), vmi)).To(Succeed())
+			step = by(vmi.Name, "Check TCP connections, after failed migration")
+			Expect(virtClient.LoginToFedora(vmi, "fedora", "fedora")).To(Succeed(), step)
+			checkEastWestIperfTraffic(vmi, serverIPsByName, step)
+		},
+		Entry("over secondary layer2", udnv1.NetworkTopologyLayer2),
+		Entry("over localnet", udnv1.NetworkTopologyLocalnet),
+	)
 
 	getIPAMClaimName := func(vmName, netName string) string {
 		return fmt.Sprintf("%s.%s", vmName, netName)
