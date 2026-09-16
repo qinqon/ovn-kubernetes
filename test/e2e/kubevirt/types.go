@@ -3,6 +3,6 @@
 
 package kubevirt
 
-const (
+var (
 	FedoraWithTestToolingContainerDiskImage = "quay.io/kubevirtci/fedora-with-test-tooling:v20250416-e37573e"
 )

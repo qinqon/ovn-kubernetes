@@ -26,6 +26,8 @@ import (
 )
 
 type OpenshiftInfraProvider struct {
+	restConfig              *rest.Config
+	networkToolsImage       string
 	clusterFeatureGate      *configv1.FeatureGate
 	operNetwork             *operv1.Network
 	hasFRRExternalContainer bool
@@ -41,6 +43,7 @@ func New(config *rest.Config) (*OpenshiftInfraProvider, error) {
 		return nil, err
 	}
 	o := &OpenshiftInfraProvider{
+		restConfig:   config,
 		hostPort:     portalloc.New(30000, 32767),
 		clusterInfra: clusterInfra,
 	}

@@ -5,8 +5,58 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ovn-kubernetes/ovn-kubernetes/test/e2e/kubevirt"
+
 	"github.com/openshift-eng/openshift-tests-extension/pkg/extension"
 )
+
+func TestVirtualizationImageMirrors(t *testing.T) {
+	originalFedora := kubevirt.FedoraWithTestToolingContainerDiskImage
+	t.Cleanup(func() {
+		kubevirt.FedoraWithTestToolingContainerDiskImage = originalFedora
+	})
+	t.Setenv("KUBE_TEST_REPO", "registry.example.com/e2e")
+	ext := extension.NewExtension("openshift", "payload", "ovn-kubernetes")
+	if err := registerTestImages(ext); err != nil {
+		t.Fatal(err)
+	}
+	for _, pullSpec := range []string{kubevirt.FedoraWithTestToolingContainerDiskImage} {
+		if !strings.HasPrefix(pullSpec, "registry.example.com/e2e:e2e-") {
+			t.Fatalf("image did not use the runner mirror: %s", pullSpec)
+		}
+	}
+	if len(ext.Images) != 2 {
+		t.Fatalf("expected agnhost and Fedora, got %d", len(ext.Images))
+	}
+	if ext.Images[1].Registry != "quay.io" {
+		t.Fatal("image discovery must advertise original pullspecs, not mirror locations")
+	}
+	if ext.Images[1].Index != -1 || ext.Images[1].Name != "kubevirt/fedora-with-test-tooling-container-disk" || ext.Images[1].Version != "v1.8.2" {
+		t.Fatalf("Fedora registration must match Origin's approved image: %+v", ext.Images[1])
+	}
+}
+
+func TestFedoraImageMatchesOriginMapping(t *testing.T) {
+	const tag = "e2e-quay-io-kubevirt-fedora-with-test-tooling-container-disk-v1-8-2-DmMayTpvDZVswLv0"
+	for _, repo := range []string{"", "quay.io/openshift/community-e2e-images", "mirror.example.com:5000/e2e"} {
+		got, err := mappedTestImage(fedoraContainerDiskImage, repo)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := fedoraContainerDiskImage
+		if repo != "" {
+			want = repo + ":" + tag
+		}
+		if got != want {
+			t.Fatalf("repo %q: got %q, want %q", repo, got, want)
+		}
+	}
+	for _, repo := range []string{"invalid", "/e2e", "registry.example.com/"} {
+		if _, err := mappedTestImage(fedoraContainerDiskImage, repo); err == nil {
+			t.Fatalf("expected invalid repository %q to fail", repo)
+		}
+	}
+}
 
 func TestSplitImagePullSpec(t *testing.T) {
 	t.Parallel()

@@ -2,7 +2,10 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"strings"
+
+	"github.com/ovn-kubernetes/ovn-kubernetes/test/e2e/kubevirt"
 
 	imageutils "k8s.io/kubernetes/test/utils/image"
 
@@ -18,17 +21,31 @@ type requiredImage struct {
 
 var requiredImages []requiredImage
 
+// Match Origin's approved VM image in test/extended/util/image/image.go and
+// test/extended/networking/livemigration.go. Keep the upstream default intact.
+const fedoraContainerDiskImage = "quay.io/kubevirt/fedora-with-test-tooling-container-disk:v1.8.2"
+
 func init() {
 	agnhostImage := requiredImage{
 		pullSpec: imageutils.GetE2EImage(imageutils.Agnhost),
 		index:    int(imageutils.Agnhost),
 	}
 	requiredImages = append(requiredImages, agnhostImage)
+	requiredImages = append(requiredImages,
+		// Origin uses -1 for non-Kubernetes images: omit the index from the
+		// mirror tag, matching image.LocationFor in the Origin VM tests.
+		requiredImage{pullSpec: fedoraContainerDiskImage, index: -1},
+	)
 }
 
 // registerTestImages advertises OVN-Kubernetes e2e images to the openshift-tests
 // extension so origin can list and mirror them (see "images" subcommand).
 func registerTestImages(ext *extension.Extension) error {
+	fedoraImage, err := mappedTestImage(fedoraContainerDiskImage, os.Getenv("KUBE_TEST_REPO"))
+	if err != nil {
+		return err
+	}
+	kubevirt.FedoraWithTestToolingContainerDiskImage = fedoraImage
 	for _, ri := range requiredImages {
 		img, err := extensionImageFromPullSpec(ri.pullSpec)
 		if err != nil {
@@ -38,6 +55,29 @@ func registerTestImages(ext *extension.Extension) error {
 		ext.RegisterImage(img)
 	}
 	return nil
+}
+
+// mappedTestImage follows Origin's GetMappedImages for images with index -1.
+// Kubernetes calls that sentinel None (0); both produce the same index-free
+// tag. An empty repository preserves the source image.
+func mappedTestImage(pullSpec, repo string) (string, error) {
+	if repo == "" {
+		return pullSpec, nil
+	}
+	registry, repository, ok := strings.Cut(repo, "/")
+	if !ok || registry == "" || repository == "" {
+		return "", fmt.Errorf("KUBE_TEST_REPO must include a registry and repository: %q", repo)
+	}
+	img, err := extensionImageFromPullSpec(pullSpec)
+	if err != nil {
+		return "", err
+	}
+	var config imageutils.Config
+	config.SetRegistry(img.Registry)
+	config.SetName(img.Name)
+	config.SetVersion(img.Version)
+	mapped := imageutils.GetMappedImageConfigs(map[imageutils.ImageID]imageutils.Config{imageutils.None: config}, repo)[imageutils.None]
+	return mapped.GetE2EImage(), nil
 }
 
 // extensionImageFromPullSpec splits a pullspec into the registry/name/version
