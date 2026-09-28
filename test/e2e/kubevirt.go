@@ -481,7 +481,7 @@ var _ = Describe("Kubevirt Virtual Machines", feature.VirtualMachineSupport, fun
 					}
 
 					By(fmt.Sprintf("start iperf3 to %s: %s", serverPodIP, stage))
-					output, err = virtClient.RunCommand(vmi, fmt.Sprintf("nohup iperf3 -t 0 -c %[2]s --logfile %[1]s &", iperfLogFile, serverPodIP), polling)
+					output, err = virtClient.RunCommand(vmi, fmt.Sprintf("nohup iperf3 -t 0 -i 1 --forceflush -c %[2]s --logfile %[1]s &", iperfLogFile, serverPodIP), polling)
 					if err != nil {
 						return fmt.Errorf("%s: %w", output, err)
 					}
@@ -492,32 +492,23 @@ var _ = Describe("Kubevirt Virtual Machines", feature.VirtualMachineSupport, fun
 
 		checkIperfTraffic = func(iperfLogFile string, readLog func() (string, error), timeout time.Duration, stage string) {
 			GinkgoHelper()
-			// Check the last line eventually show traffic flowing
-			Eventually(func() (string, error) {
+			// Observation latency is separate from the allowed traffic outage.
+			// Every check validates the history, even if traffic already recovered.
+			const maxOutage = 2 * time.Second
+			const observationTimeout = 15 * time.Second
+			progress := kubevirt.IPerfProgress{}
+			Eventually(func() (bool, error) {
 				iperfLog, err := readLog()
 				if err != nil {
-					return "", err
+					return false, err
 				}
-				// Fail fast
-				Expect(iperfLog).NotTo(ContainSubstring("iperf3: error"), stage+": "+iperfLogFile)
-				// Remove last carriage return to properly split by new line.
-				iperfLog = strings.TrimSuffix(iperfLog, "\n")
-				iperfLogLines := strings.Split(iperfLog, "\n")
-				if len(iperfLogLines) == 0 {
-					return "", nil
-				}
-				lastIperfLogLine := iperfLogLines[len(iperfLogLines)-1]
-				return lastIperfLogLine, nil
+				flowing, err := progress.Observe(iperfLog, maxOutage)
+				Expect(err).NotTo(HaveOccurred(), stage+": "+iperfLogFile)
+				return flowing, nil
 			}).
-				WithPolling(50*time.Millisecond).
-				WithTimeout(timeout).
-				Should(
-					SatisfyAll(
-						ContainSubstring(" sec "),
-						Not(ContainSubstring("0.00 Bytes  0.00 bits/sec")),
-					),
-					stage+": failed checking iperf3 traffic at file "+iperfLogFile,
-				)
+				WithPolling(time.Second).
+				WithTimeout(max(timeout, observationTimeout)).
+				Should(BeTrue(), stage+": no fresh iperf3 traffic at file "+iperfLogFile)
 		}
 
 		checkEastWestIperfTraffic = func(vmi *kubevirtv1.VirtualMachineInstance, podIPsByName map[string][]string, stage string) {
@@ -554,7 +545,7 @@ var _ = Describe("Kubevirt Virtual Machines", feature.VirtualMachineSupport, fun
 				// Redirect stdio so execFn implementations that capture output
 				// do not block waiting for the background iperf3 process to
 				// exit.
-				output, err = execFn(fmt.Sprintf("nohup iperf3 -t 0 -c %[1]s -p %[2]d --pidfile %[3]s --logfile %[4]s >/dev/null 2>&1 &", address, port, iperfPidFile, iperfLogFile))
+				output, err = execFn(fmt.Sprintf("nohup iperf3 -t 0 -i 1 --forceflush -c %[1]s -p %[2]d --pidfile %[3]s --logfile %[4]s >/dev/null 2>&1 &", address, port, iperfPidFile, iperfLogFile))
 				if err != nil {
 					return fmt.Errorf("failed at starting iperf3 in background %s: %w", output, err)
 				}
@@ -615,7 +606,7 @@ fi
 			polling := 15 * time.Second
 			for _, ip := range macVRFContainerIPs {
 				logFile := fmt.Sprintf("/tmp/external-east-west_%s_iperf3.log", ip)
-				output, err := virtClient.RunCommand(vmi, fmt.Sprintf("iperf3 -t 0 --forceflush --timestamps='%%s ' -c %[1]s --logfile %[2]s &", ip, logFile), polling)
+				output, err := virtClient.RunCommand(vmi, fmt.Sprintf("iperf3 -t 0 -i 1 --forceflush --timestamps='%%s ' -c %[1]s --logfile %[2]s &", ip, logFile), polling)
 				if err != nil {
 					return fmt.Errorf("%s: %w", output, err)
 				}
@@ -2573,18 +2564,6 @@ chpasswd: { expire: False }
 				Expect(providerCtx.SetupUnderlay(fr, infraapi.Underlay{LogicalNetworkName: networkName})).To(Succeed())
 			}
 
-			By("create server pod")
-			serverPodCfg := podConfiguration{
-				name:        "server",
-				namespace:   namespace,
-				attachments: []nadapi.NetworkSelectionElement{{Name: cudn.Name, IPRequest: serverCIDRs}},
-			}
-			serverPod := generatePodSpec(serverPodCfg)
-			serverPod.Spec.Containers[0].Image = images.Netshoot()
-			serverPod.Spec.Containers[0].Command = []string{"bash", "-ec"}
-			serverPod.Spec.Containers[0].Args = []string{iperfServerScript + "\n sleep infinity"}
-			Expect(crClient.Create(context.Background(), serverPod)).To(Succeed())
-
 			By("create client VM")
 			netSrc := kubevirtv1.NetworkSource{Multus: &kubevirtv1.MultusNetwork{NetworkName: cudn.Name}}
 			// cloud-init is used to configure the guest to have linux-bridge on top the primary NIC with custom MAC address and static IP addresses.
@@ -2603,6 +2582,23 @@ runcmd:
 			vmi := &kubevirtv1.VirtualMachineInstance{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: vm.Name}}
 			waitVirtualMachineInstanceReadinessWith(vmi, kubevirtv1.VirtualMachineInstanceAgentConnected, corev1.ConditionTrue)
 			Expect(virtClient.LoginToFedora(vmi, "fedora", "fedora")).To(Succeed(), step)
+
+			Expect(crClient.Get(context.Background(), crclient.ObjectKeyFromObject(vmi), vmi)).To(Succeed())
+			Expect(vmi.Status.NodeName).NotTo(BeEmpty())
+			By(fmt.Sprintf("Creating server pod on the VM's source node %s", vmi.Status.NodeName))
+			serverPodCfg := podConfiguration{
+				name:        "server",
+				namespace:   namespace,
+				attachments: []nadapi.NetworkSelectionElement{{Name: cudn.Name, IPRequest: serverCIDRs}},
+			}
+			serverPod := generatePodSpec(serverPodCfg)
+			// Keep the server on the original node to exercise stale learned-MAC
+			// forwarding toward the source LSP when the VM migrates away.
+			serverPod.Spec.NodeName = vmi.Status.NodeName
+			serverPod.Spec.Containers[0].Image = images.Netshoot()
+			serverPod.Spec.Containers[0].Command = []string{"bash", "-ec"}
+			serverPod.Spec.Containers[0].Args = []string{iperfServerScript + "\n sleep infinity"}
+			Expect(crClient.Create(context.Background(), serverPod)).To(Succeed())
 
 			By("Waiting for server readiness..")
 			Expect(e2epod.WaitForPodNameRunningInNamespace(context.Background(), clientSet, serverPodCfg.name, serverPodCfg.namespace)).To(Succeed())
