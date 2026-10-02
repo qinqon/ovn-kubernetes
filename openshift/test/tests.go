@@ -61,7 +61,6 @@ var InformingTests = []string{
 	"[Feature:NetworkSegmentation][ovn-kubernetes-ote][sig-network] Network Segmentation UserDefinedNetwork CRD Controller for primary UDN without required namespace label should not be able to update the namespace and remove the UDN label [Suite:ovn-kubernetes/conformance/parallel]",
 	"[Feature:NetworkSegmentation][ovn-kubernetes-ote][sig-network] Network Segmentation when primary network exist, ClusterUserDefinedNetwork status should report not-ready [Suite:ovn-kubernetes/conformance/parallel]",
 	"[Feature:NetworkSegmentation][ovn-kubernetes-ote][sig-network] Network Segmentation when primary network exist, UserDefinedNetwork status should report not-ready [Suite:ovn-kubernetes/conformance/parallel]",
-}
 
 // BlockingTests lists tests that are considered stable and should block CI jobs
 // if they fail.
@@ -110,4 +109,7 @@ var BlockingTests = []string{
 	"[Feature:EVPN][Feature:RouteAdvertisements][FeatureGate:EVPN][ovn-kubernetes-ote][sig-network] EVPN: VTEP API validations api-server should reject invalid VTEP CRs Invalid VTEP configurations [Suite:ovn-kubernetes/conformance/parallel]",
 	"[Feature:EVPN][Feature:RouteAdvertisements][FeatureGate:EVPN][ovn-kubernetes-ote][sig-network] EVPN: VTEP API validations api-server should reject invalid VTEP updates Invalid VTEP update configurations [Suite:ovn-kubernetes/conformance/parallel]",
 	"[Feature:EVPN][Feature:RouteAdvertisements][FeatureGate:EVPN][ovn-kubernetes-ote][sig-network] BGP: For BGP configured networks When the tested network is of type Layer 2 CUDN EVPN MAC-VRF and IP-VRF random VTEP When a pod runs on the tested network It can be reached by an external server on the same network When the network is IPv4 [Suite:ovn-kubernetes/conformance/parallel]",
+	"[Feature:MACSecurity][Feature:NetworkSegmentation][FeatureGate:MACSecurity][ovn-kubernetes-ote][sig-network] Network Segmentation: MAC security using ClusterUserDefinedNetwork, connectivity between client and server pods over localnet, when mac-security enabled, should fail [Serial][Suite:ovn-kubernetes/conformance/serial/virtualization]",
+	"[Feature:MACSecurity][Feature:NetworkSegmentation][FeatureGate:MACSecurity][ovn-kubernetes-ote][sig-network] Network Segmentation: MAC security using ClusterUserDefinedNetwork, connectivity between client and server pods over localnet, when mac-security disabled, should succeed (MAC spoofed traffic is allowed) [Serial][Suite:ovn-kubernetes/conformance/serial/virtualization]",
+}
 }
