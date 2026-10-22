@@ -50,7 +50,9 @@ function fixture(t, eventName = 'workflow_run') {
       issues: {
         listComments: async () => ({ data: comments }),
         createComment: t.mock.fn(async ({ body }) => {
-          comments.push({ user: { login: botLogin, type: 'Bot' }, body });
+          const comment = { user: { login: botLogin, type: 'Bot' }, body };
+          comments.push(comment);
+          return { data: comment };
         }),
       },
       checks: {
@@ -65,9 +67,9 @@ function fixture(t, eventName = 'workflow_run') {
   };
   const core = { info() {}, setFailed: message => assert.fail(message) };
   return {
-    pr, source, command, comments, checks, status, context, github, associatedPRs, branchPRs,
+    pr, source, command, comments, checks, status, context, github, core, associatedPRs, branchPRs,
     merge: github.rest.pulls.merge,
-    run: () => areaMerge({ github, context, core }),
+    run: (eventContext = context) => areaMerge({ github, context: eventContext, core }),
   };
 }
 
@@ -78,6 +80,8 @@ test('fork approval waits for CI, then workflow completion merges the approved S
   await f.run();
   assert.equal(f.merge.mock.callCount(), 0);
   assert.match(f.comments[1].body, /<!-- area-merge-sha:approved-sha -->/);
+  assert.equal(f.comments.length, 2);
+  assert.equal(f.github.rest.checks.listForRef.mock.callCount(), 2);
 
   f.checks[0].status = 'completed';
   f.context.eventName = 'workflow_run';
@@ -92,6 +96,65 @@ test('fork approval waits for CI, then workflow completion merges the approved S
 });
 
 for (const eventName of ['workflow_run', 'check_suite']) {
+  test(`approval merges when ${eventName} finishes before the waiting marker is published`, async t => {
+    const f = fixture(t, 'issue_comment');
+    f.comments.pop();
+    f.checks[0].status = 'in_progress';
+    const createComment = f.github.rest.issues.createComment;
+    t.mock.method(f.github.rest.issues, 'createComment', async params => {
+      if (params.body.startsWith('<!-- area-merge-sha:')) {
+        f.checks[0].status = 'completed';
+        await f.run({
+          ...f.context,
+          eventName,
+          payload: { ...f.context.payload, [eventName]: f.source },
+        });
+        assert.equal(f.merge.mock.callCount(), 0);
+        assert.equal(f.github.rest.checks.listForRef.mock.callCount(), 1);
+      }
+      return createComment(params);
+    });
+
+    await f.run();
+    assert.equal(f.merge.mock.callCount(), 1);
+    assert.equal(f.merge.mock.calls[0].arguments[0].sha, 'approved-sha');
+    assert.match(f.comments.at(-1).body, /PR merged by area maintainer @maintainer/);
+  });
+
+  test(`approval tolerates ${eventName} merging after the waiting marker is published`, async t => {
+    const f = fixture(t, 'issue_comment');
+    f.comments.pop();
+    f.checks[0].status = 'in_progress';
+    f.merge.mock.mockImplementation(async ({ sha }) => {
+      assert.equal(sha, 'approved-sha');
+      if (f.pr.merged) throw new Error('Pull Request is not mergeable');
+      f.pr.state = 'closed';
+      f.pr.merged = true;
+      return { data: { merged: true } };
+    });
+    const createComment = f.github.rest.issues.createComment;
+    t.mock.method(f.github.rest.issues, 'createComment', async params => {
+      const result = await createComment(params);
+      if (params.body.startsWith('<!-- area-merge-sha:')) {
+        f.checks[0].status = 'completed';
+        await f.run({
+          ...f.context,
+          eventName,
+          payload: { ...f.context.payload, [eventName]: f.source },
+        });
+        assert.equal(f.merge.mock.callCount(), 1);
+      }
+      return result;
+    });
+
+    await f.run();
+    assert.equal(f.merge.mock.callCount(), 2);
+    assert.equal(f.github.rest.pulls.get.mock.callCount(), 3);
+    assert.equal(f.comments.length, 3);
+    assert.match(f.comments.at(-1).body, /PR merged by area maintainer @maintainer/);
+    assert.ok(f.comments.every(c => !c.body.includes('Failed to merge')));
+  });
+
   test(`${eventName} resolves fork PRs by SHA`, async t => {
     const f = fixture(t, eventName);
     await f.run();
@@ -115,6 +178,57 @@ for (const eventName of ['workflow_run', 'check_suite']) {
     assert.equal(f.github.rest.checks.listForRef.mock.callCount(), 0);
   });
 }
+
+for (const failure of ['check run', 'commit status']) {
+  test(`approval reports a ${failure} failure found after publishing the waiting marker`, async t => {
+    const f = fixture(t, 'issue_comment');
+    f.comments.pop();
+    f.checks[0].status = 'in_progress';
+    f.github.rest.checks.listForRef.mock.mockImplementationOnce(async () => {
+      assert.match(f.comments.at(-1).body, /<!-- area-merge-sha:approved-sha -->/);
+      f.checks[0].status = 'completed';
+      if (failure === 'check run') {
+        f.checks[0].conclusion = 'failure';
+      } else {
+        f.status.state = 'failure';
+        f.status.statuses = [{ context: 'external-ci', state: 'failure' }];
+      }
+      return { data: { check_runs: f.checks, total_count: f.checks.length } };
+    }, 1);
+
+    await f.run();
+    assert.equal(f.merge.mock.callCount(), 0);
+    assert.match(f.comments.at(-1).body, /CI checks have failed/);
+    assert.match(f.comments.at(-1).body, /will merge automatically when all checks pass/);
+    assert.match(f.comments.at(-1).body, failure === 'check run' ? /- `e2e`/ : /- `external-ci`/);
+  });
+}
+
+test('approval keeps the CI recheck and merge pinned when the head changes after the waiting marker', async t => {
+  const f = fixture(t, 'issue_comment');
+  f.comments.pop();
+  f.checks[0].status = 'in_progress';
+  const createComment = f.github.rest.issues.createComment;
+  t.mock.method(f.github.rest.issues, 'createComment', async params => {
+    const result = await createComment(params);
+    if (params.body.startsWith('<!-- area-merge-sha:')) {
+      f.pr.head.sha = 'unreviewed-sha';
+      f.checks[0].status = 'completed';
+    }
+    return result;
+  });
+  const getCombinedStatusForRef = f.github.rest.repos.getCombinedStatusForRef;
+  t.mock.method(f.github.rest.repos, 'getCombinedStatusForRef', async params => {
+    assert.equal(params.ref, 'approved-sha');
+    return getCombinedStatusForRef(params);
+  });
+
+  await f.run();
+  assert.deepEqual(f.github.rest.checks.listForRef.mock.calls.map(c => c.arguments[0].ref),
+    ['approved-sha', 'approved-sha']);
+  assert.equal(f.merge.mock.callCount(), 1);
+  assert.equal(f.merge.mock.calls[0].arguments[0].sha, 'approved-sha');
+});
 
 test('workflow completion without a waiting marker cannot initiate a merge', async t => {
   const f = fixture(t);
@@ -207,6 +321,44 @@ test('a queued retry skips a PR merged by the preceding run', async t => {
   assert.equal(f.github.rest.issues.createComment.mock.callCount(), 1);
 });
 
+for (const [scenario, state, merged, sha] of [
+  ['still open', 'open', false, 'approved-sha'],
+  ['closed without merging', 'closed', false, 'approved-sha'],
+  ['merged at a different SHA', 'closed', true, 'other-sha'],
+]) {
+  test(`merge errors are reported when the PR is ${scenario}`, async t => {
+    const f = fixture(t);
+    const setFailed = t.mock.method(f.core, 'setFailed', () => {});
+    f.merge.mock.mockImplementation(async () => { throw new Error('merge rejected'); });
+    f.github.rest.pulls.get.mock.mockImplementationOnce(async () => ({
+      data: { ...f.pr, state, merged, head: { ...f.pr.head, sha } },
+    }), 1);
+
+    await f.run();
+    assert.equal(f.github.rest.pulls.get.mock.callCount(), 2);
+    assert.deepEqual(setFailed.mock.calls.map(c => c.arguments),
+      [[`Failed to merge PR #${f.pr.number}: merge rejected`]]);
+    assert.equal(f.github.rest.issues.createComment.mock.callCount(), 1);
+    assert.match(f.comments.at(-1).body, /Failed to merge this PR: `merge rejected`/);
+    assert.match(f.comments.at(-1).body, /A repo maintainer may need to merge manually/);
+  });
+}
+
+test('a failed PR refresh preserves the original merge error', async t => {
+  const f = fixture(t);
+  const setFailed = t.mock.method(f.core, 'setFailed', () => {});
+  f.merge.mock.mockImplementation(async () => { throw new Error('merge rejected'); });
+  f.github.rest.pulls.get.mock.mockImplementationOnce(async () => {
+    throw new Error('PR lookup unavailable');
+  }, 1);
+
+  await f.run();
+  assert.equal(f.github.rest.pulls.get.mock.callCount(), 2);
+  assert.deepEqual(setFailed.mock.calls.map(c => c.arguments),
+    [[`Failed to merge PR #${f.pr.number}: merge rejected`]]);
+  assert.match(f.comments.at(-1).body, /Failed to merge this PR: `merge rejected`/);
+});
+
 test('workflow completions from pushes are ignored', async t => {
   const f = fixture(t);
   f.source.event = 'push';
@@ -232,14 +384,17 @@ test('a failing check blocks the retry', async t => {
   assert.match(f.comments.at(-1).body, /CI checks have failed/);
 });
 
-test('a failing commit status blocks the retry', async t => {
-  const f = fixture(t);
-  f.status.state = 'failure';
-  f.status.statuses = [{ context: 'external-ci', state: 'failure' }];
-  await f.run();
-  assert.equal(f.merge.mock.callCount(), 0);
-  assert.match(f.comments.at(-1).body, /external-ci/);
-});
+for (const state of ['failure', 'error']) {
+  test(`a commit status with state ${state} blocks the retry`, async t => {
+    const f = fixture(t);
+    // GitHub aggregates both failure and error contexts into state "failure".
+    f.status.state = 'failure';
+    f.status.statuses = [{ context: 'external-ci', state }];
+    await f.run();
+    assert.equal(f.merge.mock.callCount(), 0);
+    assert.match(f.comments.at(-1).body, /external-ci/);
+  });
+}
 
 for (const eventName of ['workflow_run', 'check_suite']) {
   test(`${eventName} reports the same failures only once regardless of order`, async t => {
@@ -259,6 +414,51 @@ for (const eventName of ['workflow_run', 'check_suite']) {
     assert.equal(f.merge.mock.callCount(), 1);
   });
 }
+
+test('duplicate failure names across checks and statuses do not repeat notifications', async t => {
+  const f = fixture(t);
+  f.checks[0].conclusion = 'failure';
+  f.status.state = 'failure';
+  f.status.statuses = [{ context: 'e2e', state: 'failure' }];
+  await f.run();
+  assert.equal(f.comments.at(-1).body.match(/- `e2e`/g).length, 1);
+
+  f.status.state = 'success';
+  f.status.statuses[0].state = 'success';
+  await f.run();
+  assert.equal(f.github.rest.issues.createComment.mock.callCount(), 1);
+  assert.equal(f.merge.mock.callCount(), 0);
+});
+
+test('different failure sets containing commas receive separate notifications', async t => {
+  const f = fixture(t);
+  f.checks[0].name = 'e2e,ipv6';
+  f.checks[0].conclusion = 'failure';
+  f.checks.push({ name: 'unit', status: 'completed', conclusion: 'failure' });
+  await f.run();
+
+  f.checks[0].name = 'e2e';
+  f.checks[1].name = 'ipv6,unit';
+  await f.run();
+  assert.equal(f.github.rest.issues.createComment.mock.callCount(), 2);
+  assert.match(f.comments.at(-1).body, /- `e2e`\n- `ipv6,unit`/);
+  assert.equal(f.merge.mock.callCount(), 0);
+});
+
+test('failure names cannot terminate the hidden failure marker', async t => {
+  const f = fixture(t);
+  f.checks[0].name = 'e2e --> "ipv6"';
+  f.checks[0].conclusion = 'failure';
+  await f.run();
+  const marker = f.comments.at(-1).body.split('\n')[0];
+  assert.match(marker, /^<!-- area-merge-failed-sha:approved-sha:/);
+  assert.equal(marker.indexOf('-->'), marker.length - 3);
+  assert.match(f.comments.at(-1).body, /- `e2e --> "ipv6"`/);
+
+  await f.run();
+  assert.equal(f.github.rest.issues.createComment.mock.callCount(), 1);
+  assert.equal(f.merge.mock.callCount(), 0);
+});
 
 test('retries report changed failures and failures on a newly approved SHA', async t => {
   const f = fixture(t);
