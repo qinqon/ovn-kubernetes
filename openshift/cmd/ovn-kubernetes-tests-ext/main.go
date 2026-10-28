@@ -46,10 +46,11 @@ var ocpInfra *ocpinfraprovider.OpenshiftInfraProvider
 
 const (
 	// Feature labels used for test categorization and filtering
-	featureLabelEVPN                = "Feature:EVPN"
-	featureLabelNetworkSegmentation = "Feature:NetworkSegmentation"
-	featureLabelEgressIP            = "Feature:EgressIP"
-	featureLabelMACSecurity         = "Feature:MACSecurity"
+	featureLabelEVPN                  = "Feature:EVPN"
+	featureLabelNetworkSegmentation   = "Feature:NetworkSegmentation"
+	featureLabelVirtualMachineSupport = "Feature:VirtualMachineSupport"
+	featureLabelEgressIP              = "Feature:EgressIP"
+	featureLabelMACSecurity           = "Feature:MACSecurity"
 	// Test constants used for test categorization and filtering
 	EIPSecondaryNetworkTestPrefix = "secondary-host-eip"
 )
@@ -129,6 +130,11 @@ func main() {
 		Qualifiers: []string{"name.contains('[Suite:ovn-kubernetes/conformance/parallel')"},
 	})
 
+	ovnTestsExtension.AddSuite(extension.Suite{
+		Name:       "ovn-kubernetes/conformance/serial/virtualization",
+		Qualifiers: []string{"name.contains('[Suite:ovn-kubernetes/conformance/serial/virtualization')"},
+	})
+
 	// Initialize cluster infra if kubeconfig is available. When no kubeconfig is present
 	// (e.g. during "info" or "list tests"), ocpInfra stays nil and all tests are listed.
 	// Must happen before BuildExtensionTestSpecsFromOpenShiftGinkgoSuite because Ginkgo
@@ -205,9 +211,9 @@ func main() {
 			spec.Labels.Insert(label)
 		}
 
-		// Exclude Network Segmentation tests on SingleReplica topology (e.g., MicroShift, SNO)
+		// Exclude Network Segmentation and Kubevirt tests on SingleReplica topology (e.g., MicroShift, SNO)
 		// These tests require at least 2 nodes and will fail on single-node deployments
-		if spec.Labels.Has(featureLabelNetworkSegmentation) {
+		if spec.Labels.HasAny(featureLabelNetworkSegmentation, featureLabelVirtualMachineSupport) {
 			spec.Exclude(extensiontests.TopologyEquals("SingleReplica"))
 		}
 
