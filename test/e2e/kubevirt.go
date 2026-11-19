@@ -735,35 +735,23 @@ fi
 			return vmim
 		}
 
-		checkLiveMigrationSucceeded = func(vmName string, migrationMode kubevirtv1.MigrationMode) {
+		checkLiveMigrationSucceeded = func(migration *kubevirtv1.VirtualMachineInstanceMigration, migrationMode kubevirtv1.MigrationMode) {
 			GinkgoHelper()
 			By("checking the VM live-migrated correctly")
 			vmi := &kubevirtv1.VirtualMachineInstance{
 				ObjectMeta: metav1.ObjectMeta{
 					Namespace: namespace,
-					Name:      vmName,
+					Name:      migration.Spec.VMIName,
 				},
 			}
-			err := crClient.Get(context.TODO(), crclient.ObjectKeyFromObject(vmi), vmi)
-			Expect(err).NotTo(HaveOccurred(), "should success retrieving vmi")
-			currentNode := vmi.Status.NodeName
-
-			Eventually(func() *kubevirtv1.VirtualMachineInstanceMigrationState {
-				err := crClient.Get(context.TODO(), crclient.ObjectKeyFromObject(vmi), vmi)
-				Expect(err).NotTo(HaveOccurred())
-				return vmi.Status.MigrationState
-			}).WithPolling(time.Second).WithTimeout(10*time.Minute).ShouldNot(BeNil(), "should have a MigrationState")
-			Eventually(func() string {
-				err := crClient.Get(context.TODO(), crclient.ObjectKeyFromObject(vmi), vmi)
-				Expect(err).NotTo(HaveOccurred())
-				return vmi.Status.MigrationState.TargetNode
-			}).WithPolling(time.Second).WithTimeout(10*time.Minute).ShouldNot(Equal(currentNode), "should refresh MigrationState")
-			Eventually(func() bool {
-				err := crClient.Get(context.TODO(), crclient.ObjectKeyFromObject(vmi), vmi)
-				Expect(err).NotTo(HaveOccurred())
-				return vmi.Status.MigrationState.Completed
-			}).WithPolling(time.Second).WithTimeout(20*time.Minute).Should(BeTrue(), "should complete migration")
-			Expect(crClient.Get(context.TODO(), crclient.ObjectKeyFromObject(vmi), vmi)).To(Succeed())
+			Eventually(func(g Gomega) {
+				g.Expect(crClient.Get(context.TODO(), crclient.ObjectKeyFromObject(vmi), vmi)).To(Succeed())
+				state := vmi.Status.MigrationState
+				g.Expect(state).NotTo(BeNil())
+				g.Expect(state.MigrationUID).To(Equal(migration.UID))
+				g.Expect(state.Completed).To(BeTrue())
+			}).WithPolling(time.Second).WithTimeout(20*time.Minute).Should(Succeed(), "should complete migration")
+			Expect(vmi.Status.MigrationState.TargetNode).NotTo(Equal(vmi.Status.MigrationState.SourceNode))
 			Expect(vmi.Status.MigrationState.SourcePod).NotTo(BeEmpty())
 			Eventually(func() corev1.PodPhase {
 				sourcePod := &corev1.Pod{
@@ -772,11 +760,11 @@ fi
 						Name:      vmi.Status.MigrationState.SourcePod,
 					},
 				}
-				err = crClient.Get(context.TODO(), crclient.ObjectKeyFromObject(sourcePod), sourcePod)
+				err := crClient.Get(context.TODO(), crclient.ObjectKeyFromObject(sourcePod), sourcePod)
 				Expect(err).NotTo(HaveOccurred())
 				return sourcePod.Status.Phase
 			}).WithPolling(time.Second).WithTimeout(time.Minute).Should(Equal(corev1.PodSucceeded), "should move source pod to Completed")
-			err = crClient.Get(context.TODO(), crclient.ObjectKeyFromObject(vmi), vmi)
+			err := crClient.Get(context.TODO(), crclient.ObjectKeyFromObject(vmi), vmi)
 			Expect(err).NotTo(HaveOccurred(), "should success retrieving vmi after migration")
 			Expect(vmi.Status.MigrationState.Failed).To(BeFalse(), func() string {
 				vmiJSON, err := json.Marshal(vmi)
@@ -789,8 +777,7 @@ fi
 		}
 
 		liveMigrateSucceed = func(vmi *kubevirtv1.VirtualMachineInstance) {
-			liveMigrateVirtualMachine(vmi.Name)
-			checkLiveMigrationSucceeded(vmi.Name, kubevirtv1.MigrationPreCopy)
+			checkLiveMigrationSucceeded(liveMigrateVirtualMachine(vmi.Name), kubevirtv1.MigrationPreCopy)
 		}
 
 		checkLiveMigrationFailed = func(migration *kubevirtv1.VirtualMachineInstanceMigration) {
@@ -1052,8 +1039,7 @@ config:
 			return vms
 		}
 		liveMigrateAndCheck = func(vmName string, migrationMode kubevirtv1.MigrationMode, externalContainer infraapi.ExternalContainer, serverAddresses []string, serverPort int32, step string) {
-			liveMigrateVirtualMachine(vmName)
-			checkLiveMigrationSucceeded(vmName, migrationMode)
+			checkLiveMigrationSucceeded(liveMigrateVirtualMachine(vmName), migrationMode)
 			checkConnectivityAndNetworkPolicies(vmName, externalContainer, serverAddresses, serverPort, step)
 		}
 
@@ -1205,7 +1191,7 @@ config:
 			return ips, nil
 		}
 
-		createIperfServerPods = func(nodes []corev1.Node, udnName string, role udnv1.NetworkRole, staticSubnets []string) ([]*corev1.Pod, error) {
+		createIperfServerPods = func(nodes []corev1.Node, udnName string, role udnv1.NetworkRole, staticSubnets []string, options ...func(*corev1.Pod)) ([]*corev1.Pod, error) {
 			var pods []*corev1.Pod
 			for i, node := range nodes {
 				var nse *nadapi.NetworkSelectionElement
@@ -1225,6 +1211,9 @@ config:
 					}
 					pod.Spec.Containers[0].Image = images.Netshoot()
 					pod.Spec.Containers[0].Args = []string{iperfServerScript + "\n sleep infinity"}
+					for _, option := range options {
+						option(pod)
+					}
 				})
 				if err != nil {
 					return nil, err
@@ -2294,7 +2283,52 @@ chpasswd: { expire: False }
 				waitVirtualMachineInstanceReadiness(vmi)
 			}
 		})
-		DescribeTable("should maintain tcp connection with minimal downtime", func(ctx SpecContext, td func(vmi *kubevirtv1.VirtualMachineInstance)) {
+		// Recomputing with a disabled target port exercises the incremental flood-group
+		// update when migration enables the port again (ovn-kubernetes#7312).
+		migrateWithNorthdRecompute := func(ctx context.Context, vmi *kubevirtv1.VirtualMachineInstance, nadName string) {
+			GinkgoHelper()
+			By("holding migration target preparation until northd has recomputed")
+			original := vmi.DeepCopy()
+			metav1.SetMetaDataAnnotation(&vmi.ObjectMeta, kubevirtv1.FuncTestBlockLauncherPrepareMigrationTargetAnnotation, "")
+			unblock := crclient.MergeFrom(vmi.DeepCopy())
+			Expect(crClient.Patch(ctx, vmi, crclient.MergeFrom(original))).To(Succeed())
+			held := true
+			DeferCleanup(func(ctx SpecContext) {
+				if held {
+					Expect(crClient.Patch(ctx, original, unblock)).To(Succeed())
+				}
+			})
+			migration := liveMigrateVirtualMachine(vmi.Name)
+			ovnNamespace := deploymentconfig.Get().OVNKubernetesNamespace()
+			var northdPod string
+			Eventually(func(g Gomega) {
+				g.Expect(crClient.Get(ctx, crclient.ObjectKeyFromObject(vmi), vmi)).To(Succeed())
+				state := vmi.Status.MigrationState
+				g.Expect(state).NotTo(BeNil())
+				g.Expect(state.MigrationUID).To(Equal(migration.UID))
+				g.Expect(state.TargetPod).NotTo(BeEmpty())
+				g.Expect(state.TargetNode).NotTo(BeEmpty())
+				pods, err := fr.ClientSet.CoreV1().Pods(ovnNamespace).List(ctx, metav1.ListOptions{
+					LabelSelector: "app=ovnkube-node", FieldSelector: "spec.nodeName=" + state.TargetNode,
+				})
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(pods.Items).NotTo(BeEmpty())
+				northdPod = pods.Items[0].Name
+				lsp := util.GetUserDefinedNetworkLogicalPortName(namespace, state.TargetPod, namespacedName(namespace, nadName))
+				out, stderr, err := ExecCommandInContainerWithFullOutput(fr, ovnNamespace, northdPod, "ovn-northd", "ovn-nbctl", "--if-exists", "get", "logical-switch-port", lsp, "enabled")
+				g.Expect(err).NotTo(HaveOccurred(), stderr)
+				g.Expect(out).To(Equal("false"), "migration target port %s must be disabled", lsp)
+			}).WithTimeout(2 * time.Minute).WithPolling(time.Second).Should(Succeed())
+			_, stderr, err := ExecCommandInContainerWithFullOutput(fr, ovnNamespace, northdPod, "ovn-northd", "ovn-appctl", "-t", "ovn-northd", "inc-engine/recompute")
+			Expect(err).NotTo(HaveOccurred(), stderr)
+			// Wait for northd to process NB changes before enabling the port.
+			_, stderr, err = ExecCommandInContainerWithFullOutput(fr, ovnNamespace, northdPod, "ovn-northd", "ovn-nbctl", "--timeout=30", "--wait=sb", "sync")
+			Expect(err).NotTo(HaveOccurred(), stderr)
+			Expect(crClient.Patch(ctx, original, unblock)).To(Succeed())
+			held = false
+			checkLiveMigrationSucceeded(migration, kubevirtv1.MigrationPreCopy)
+		}
+		DescribeTable("should maintain tcp connection with minimal downtime", func(ctx SpecContext, successfulMigration bool) {
 			By("setting up the localnet underlay")
 			cudn, networkName := kubevirt.GenerateCUDN(namespace, "net1", udnv1.NetworkTopologyLocalnet, udnv1.NetworkRoleSecondary, udnv1.DualStackCIDRs{})
 			createCUDN(ctx, cudn)
@@ -2306,7 +2340,11 @@ chpasswd: { expire: False }
 			selectedNodes = workerNodeList.Items
 			Expect(selectedNodes).NotTo(BeEmpty())
 
-			iperfServerTestPods, err = createIperfServerPods(selectedNodes, cudn.Name, cudn.Spec.Network.Localnet.Role, filterCIDRs(fr.ClientSet, ipv4CIDR, ipv6CIDR))
+			iperfServerTestPods, err = createIperfServerPods(selectedNodes, cudn.Name, cudn.Spec.Network.Localnet.Role, filterCIDRs(fr.ClientSet, ipv4CIDR, ipv6CIDR), func(pod *corev1.Pod) {
+				if successfulMigration { // Allow the peer to flush its neighbor cache before pinging the VM.
+					pod.Spec.Containers[0].SecurityContext = &corev1.SecurityContext{Capabilities: &corev1.Capabilities{Add: []corev1.Capability{"NET_ADMIN"}}}
+				}
+			})
 			Expect(err).NotTo(HaveOccurred())
 
 			filteredCIDRs := filterCIDRs(fr.ClientSet, vmiIPv4, vmiIPv6)
@@ -2350,7 +2388,12 @@ chpasswd: { expire: False }
 			checkEastWestIperfTraffic(vmi, testPodsIPs, step)
 
 			by(vmi.Name, "Running live migration for virtual machine instance")
-			td(vmi)
+			sourceNode := vmi.Status.NodeName
+			if successfulMigration {
+				migrateWithNorthdRecompute(ctx, vmi, cudn.Name)
+			} else {
+				liveMigrateFailed(vmi)
+			}
 
 			// Update vmi status after live migration
 			Expect(crClient.Get(context.Background(), crclient.ObjectKeyFromObject(vmi), vmi)).To(Succeed())
@@ -2364,6 +2407,28 @@ chpasswd: { expire: False }
 			By("Stop iperf3 traffic before force killing vm, so iperf3 server do not get stuck")
 			output, err = virtClient.RunCommand(vmi, "killall --wait iperf3", 5*time.Second)
 			Expect(err).ToNot(HaveOccurred(), output)
+
+			if successfulMigration {
+				By("checking that a peer can resolve and reach the migrated VM after northd recomputed")
+				// Avoid stale unicast FDB entries on the source node (FDP-4420).
+				var peer *corev1.Pod
+				for _, pod := range iperfServerTestPods {
+					if pod.Spec.NodeName != sourceNode {
+						peer = pod
+						break
+					}
+				}
+				Expect(peer).NotTo(BeNil(), "need an iperf peer outside the source node")
+				for _, cidr := range filteredCIDRs {
+					ip, _, _ := strings.Cut(cidr, "/")
+					// A cached neighbor would bypass broadcast ARP / multicast ND.
+					cmd := fmt.Sprintf("ip neigh flush to %s && ping -c 1 -W 2 %s", ip, ip)
+					Eventually(func(g Gomega) {
+						out, stderr, err := ExecShellInPodWithFullOutput(fr, namespace, peer.Name, cmd)
+						g.Expect(err).NotTo(HaveOccurred(), "%s: %s %s", cmd, out, stderr)
+					}).WithTimeout(time.Minute).WithPolling(5 * time.Second).Should(Succeed())
+				}
+			}
 
 			step = by(vmi.Name, fmt.Sprintf("Force kill qemu at node %q where VM is running on", vmi.Status.NodeName))
 			Expect(kubevirt.ForceKillVirtLauncherAtNode(infraprovider.Get(), vmi.Status.NodeName, vmi.Namespace, vmi.Name)).To(Succeed(), step)
@@ -2396,13 +2461,17 @@ chpasswd: { expire: False }
 			checkEastWestIperfTraffic(vmi, testPodsIPs, step)
 
 			by(vmi.Name, "Running live migration after forcing vm failure")
-			td(vmi)
+			if successfulMigration {
+				liveMigrateSucceed(vmi)
+			} else {
+				liveMigrateFailed(vmi)
+			}
 
 			step = by(vmi.Name, "Check east/west traffic for failed virtual machine after live migration")
 			checkEastWestIperfTraffic(vmi, testPodsIPs, step)
 		},
-			Entry("after succeeded live migration", liveMigrateSucceed),
-			Entry("after failed live migration", liveMigrateFailed),
+			Entry("after succeeded live migration", true),
+			Entry("after failed live migration", false),
 		)
 	})
 
